@@ -188,6 +188,9 @@ export class Embedder {
 
     // Set cache directory BEFORE creating pipeline
     env.cacheDir = this.config.cacheDir
+    if (process.env['HF_ENDPOINT']) {
+      env.remoteHost = process.env['HF_ENDPOINT']
+    }
 
     // No fallback — if the requested device fails, init throws.
     const device = this.config.device || 'cpu'
