@@ -411,7 +411,7 @@ variables and flags; image storage on CLI ingestion and sync is enabled only wit
 | `BASE_DIRS` | N/A | (unset) | JSON array of document roots; takes precedence over `BASE_DIR` |
 | `DB_PATH` | `--db-path` | `./lancedb/` | Vector database location |
 | `CACHE_DIR` | `--cache-dir` | `./models/` | Model cache directory |
-| `HF_ENDPOINT` | N/A | `https://huggingface.co` | Model download endpoint. Set this to your Hugging Face mirror URL when direct downloads are blocked. |
+| `HF_ENDPOINT` | N/A | `https://huggingface.co` | Hugging Face model download endpoint; use a mirror URL when direct downloads are blocked |
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Hugging Face embedding model |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
