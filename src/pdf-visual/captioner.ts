@@ -27,6 +27,9 @@ export function createCaptioner(config: CaptionerConfig): Captioner {
   // global twice with the same value is idempotent (shared with the
   // embedder).
   env.cacheDir = config.cacheDir
+  if (process.env['HF_ENDPOINT']) {
+    env.remoteHost = process.env['HF_ENDPOINT']
+  }
 
   const resolvedDevice = config.device || 'cpu'
 
