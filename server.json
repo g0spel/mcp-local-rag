@@ -8,13 +8,13 @@
     "url": "https://github.com/shinpr/mcp-local-rag",
     "source": "github"
   },
-  "version": "0.18.4",
+  "version": "0.18.5",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "mcp-local-rag",
-      "version": "0.18.4",
+      "version": "0.18.5",
       "transport": {
         "type": "stdio"
       },
@@ -43,6 +43,13 @@
         {
           "name": "CACHE_DIR",
           "description": "Directory where Transformers.js models are cached (defaults to ./models/)",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "HF_ENDPOINT",
+          "description": "Hugging Face model download endpoint. Set this to a mirror URL when direct downloads are blocked (defaults to https://huggingface.co).",
           "isRequired": false,
           "format": "string",
           "isSecret": false

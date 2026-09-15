@@ -333,6 +333,7 @@ Le serveur MCP lit les variables d'environnement. La CLI accepte les mêmes vari
 | `BASE_DIRS` | Non disponible | non définie | Tableau JSON de racines documentaires ; prioritaire sur `BASE_DIR` |
 | `DB_PATH` | `--db-path` | `./lancedb/` | Emplacement de la base de données vectorielle |
 | `CACHE_DIR` | `--cache-dir` | `./models/` | Répertoire du cache des modèles |
+| `HF_ENDPOINT` | Non disponible | `https://huggingface.co` | Adresse de téléchargement des modèles. Indiquez l'URL de votre miroir Hugging Face si les téléchargements directs sont bloqués. |
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Modèle d'embeddings Hugging Face |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100 Mo) | Taille maximale d'un fichier en octets |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Longueur minimale d'un segment en caractères (1–10000) |

@@ -333,6 +333,7 @@ MCP 服务器读取环境变量。CLI 支持相同的变量和下表所列的命
 | `BASE_DIRS` | 不适用 | 未设置 | 文档根目录的 JSON 数组；优先于 `BASE_DIR` |
 | `DB_PATH` | `--db-path` | `./lancedb/` | 向量数据库位置 |
 | `CACHE_DIR` | `--cache-dir` | `./models/` | 模型缓存目录 |
+| `HF_ENDPOINT` | 不适用 | `https://huggingface.co` | 模型下载地址。无法直接下载时，将其设为 Hugging Face 镜像地址。 |
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Hugging Face 嵌入模型 |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600`（100 MB） | 最大文件大小（字节） |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | 文本块最小字符数（1–10000） |
