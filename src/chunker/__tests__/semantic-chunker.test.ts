@@ -10,6 +10,13 @@ import {
   SemanticChunker,
   type SemanticChunkerConfig,
 } from '../semantic-chunker.js'
+import {
+  denseScriptChunks,
+  denseScriptDocument,
+  fixtureEmbeddings,
+  latinChunks,
+  latinDocument,
+} from './main-boundary-fixture.js'
 
 // Mock embedder interface
 interface MockEmbedder {
@@ -696,4 +703,65 @@ describe('Measured token containment', () => {
 
     expect(chunks).toEqual([{ text, index: 0, sourceStart: 0, sourceEnd: text.length }])
   })
+})
+
+// --------------------------------------------
+// Boundary preservation against `main` (AC-011, AC-016)
+// --------------------------------------------
+describe('Boundary preservation against main', () => {
+  /** Every fixture unit and group measures well inside this cap. */
+  const CAP = 512
+
+  /** One token per UTF-16 code unit, so a measurement is readable as a length. */
+  const embedBatch = (texts: string[]): Promise<number[][]> =>
+    Promise.resolve(fixtureEmbeddings(texts))
+  const countTokens = (texts: string[]): Promise<number[]> =>
+    Promise.resolve(texts.map((text) => text.length))
+
+  const documents = [
+    { document: 'Latin', text: latinDocument, mainChunks: latinChunks },
+    { document: 'dense-script', text: denseScriptDocument, mainChunks: denseScriptChunks },
+  ]
+
+  const configurations = [
+    {
+      configuration: 'a resolved cap that every unit and group fits',
+      embedder: { embedBatch, getTokenLimit: () => Promise.resolve(CAP), countTokens },
+    },
+    { configuration: 'an embedder exposing neither optional member', embedder: { embedBatch } },
+    {
+      configuration: 'an embedder whose getTokenLimit resolves to null',
+      embedder: { embedBatch, getTokenLimit: () => Promise.resolve(null), countTokens },
+    },
+  ]
+
+  const cases = configurations.flatMap((configuration) =>
+    documents.map((document) => ({ ...configuration, ...document }))
+  )
+
+  it.each(documents)(
+    'keeps every group of the $document fixture inside the cap, as AC-011 requires',
+    ({ mainChunks }) => {
+      expect(mainChunks.length).toBeGreaterThan(0)
+      for (const chunk of mainChunks) {
+        expect(chunk.text.length).toBeLessThanOrEqual(CAP)
+      }
+    }
+  )
+
+  it.each(cases)(
+    'reproduces main’s chunks for the $document document with $configuration',
+    async ({ text, mainChunks, embedder }) => {
+      const chunker = new SemanticChunker({
+        hardThreshold: 0.6,
+        initConst: 1.5,
+        c: 0.9,
+        minChunkLength: DEFAULT_MIN_CHUNK_LENGTH,
+      })
+
+      const chunks = await chunker.chunkText(text, embedder)
+
+      expect(chunks).toEqual(mainChunks)
+    }
+  )
 })
