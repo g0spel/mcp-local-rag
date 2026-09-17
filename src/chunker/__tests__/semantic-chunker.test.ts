@@ -3,7 +3,13 @@
 // Purpose: Verify Max-Min semantic chunking algorithm
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { isGarbageChunk, SemanticChunker, type SemanticChunkerConfig } from '../semantic-chunker.js'
+import type { TextChunk } from '../index.js'
+import {
+  DEFAULT_MIN_CHUNK_LENGTH,
+  isGarbageChunk,
+  SemanticChunker,
+  type SemanticChunkerConfig,
+} from '../semantic-chunker.js'
 
 // Mock embedder interface
 interface MockEmbedder {
@@ -507,63 +513,187 @@ describe('isGarbageChunk', () => {
 })
 
 // --------------------------------------------
-// CJK chunk-length safety (position-window overflow)
+// Measured token containment (stages A and C)
 // --------------------------------------------
-describe('CJK chunk-length safety', () => {
-  let chunker: SemanticChunker
-  let mockEmbedder: { embedBatch: (texts: string[]) => Promise<number[][]> }
+describe('Measured token containment', () => {
+  interface MeasuredEmbedder {
+    embedBatch: (texts: string[]) => Promise<number[][]>
+    getTokenLimit: () => Promise<number | null>
+    countTokens: (texts: string[]) => Promise<number[]>
+  }
 
-  beforeEach(() => {
-    chunker = new SemanticChunker({
-      hardThreshold: 0.6,
-      initConst: 1.5,
-      c: 0.9,
-      minChunkLength: 50,
-    })
-    // Identical unit vectors: every sentence is maximally similar, so all
-    // units land in one semantic group — the worst case for length overflow.
-    mockEmbedder = {
-      embedBatch: async (texts) => texts.map(() => [1, 0]),
+  interface EmbedderLog {
+    /** Method names in call order, so stage A can be proven to run before embedding. */
+    calls: string[]
+    /** Every batch handed to `embedBatch`, in call order. */
+    batches: string[][]
+  }
+
+  /** One token per UTF-16 code unit: the cap is then readable as a character count. */
+  const codeUnitTokens = (text: string): number => text.length
+
+  /**
+   * Identical unit vectors put every unit in one semantic group, which is the
+   * only state where a group can exceed the cap.
+   */
+  function measuredEmbedder(
+    cap: number | null,
+    tokensOf: (text: string) => number = codeUnitTokens
+  ): { embedder: MeasuredEmbedder; log: EmbedderLog } {
+    const log: EmbedderLog = { calls: [], batches: [] }
+    const embedder: MeasuredEmbedder = {
+      embedBatch: (texts) => {
+        log.calls.push('embedBatch')
+        log.batches.push([...texts])
+        return Promise.resolve(texts.map(() => [1, 0]))
+      },
+      getTokenLimit: () => {
+        log.calls.push('getTokenLimit')
+        return Promise.resolve(cap)
+      },
+      countTokens: (texts) => {
+        log.calls.push('countTokens')
+        return Promise.resolve(texts.map(tokensOf))
+      },
     }
+    return { embedder, log }
+  }
+
+  function containmentChunker(minChunkLength = DEFAULT_MIN_CHUNK_LENGTH): SemanticChunker {
+    return new SemanticChunker({ hardThreshold: 0.6, initConst: 1.5, c: 0.9, minChunkLength })
+  }
+
+  /** Independent check of AC-017: spans are ordered and inside the source. */
+  function expectOrderedSpans(chunks: TextChunk[], text: string): void {
+    let previousEnd = 0
+    for (const chunk of chunks) {
+      expect(chunk.sourceStart).toBeGreaterThanOrEqual(previousEnd)
+      expect(chunk.sourceEnd).toBeGreaterThan(chunk.sourceStart)
+      expect(chunk.sourceEnd).toBeLessThanOrEqual(text.length)
+      previousEnd = chunk.sourceEnd
+    }
+  }
+
+  it('measures and splits sentence units before the first embedBatch call', async () => {
+    const text = 'abcdefghij'.repeat(12)
+    const { embedder, log } = measuredEmbedder(30)
+
+    await containmentChunker().chunkText(text, embedder)
+
+    expect(log.calls.indexOf('countTokens')).toBeLessThan(log.calls.indexOf('embedBatch'))
+    expect(log.batches).toHaveLength(1)
+    expect(log.batches[0]).toEqual([
+      text.slice(0, 30),
+      text.slice(30, 60),
+      text.slice(60, 90),
+      text.slice(90, 120),
+    ])
   })
 
-  it('splits a single unpunctuated CJK sentence longer than the cap', async () => {
-    const text = '一二三四五六七八九十'.repeat(90) // 900 chars, <80% single-char repetition
-    const chunks = await chunker.chunkText(text, mockEmbedder)
+  it('splits an oversized group at unit boundaries only', async () => {
+    const sentences = [
+      'Alpha sentence number one.',
+      'Beta sentence number two.',
+      'Gamma sentence number three.',
+      'Delta sentence number four.',
+      'Epsilon sentence number five.',
+      'Zeta sentence number six.',
+    ]
+    const text = sentences.join(' ')
+    const { embedder } = measuredEmbedder(60)
+
+    const chunks = await containmentChunker().chunkText(text, embedder)
+
     expect(chunks.length).toBeGreaterThan(1)
     for (const chunk of chunks) {
-      expect(chunk.text.length).toBeLessThanOrEqual(400)
+      // Every cut fell between sentences: each part of a chunk is a whole unit.
+      for (const part of chunk.text.split(/(?<=\.)\s/)) {
+        expect(sentences).toContain(part)
+      }
+      expect(text.slice(chunk.sourceStart, chunk.sourceEnd)).toBe(chunk.text)
     }
+    expect(chunks.map((chunk) => chunk.text).join(' ')).toBe(text)
+    expect(chunks.map((chunk) => chunk.index)).toEqual(chunks.map((_, index) => index))
+    expectOrderedSpans(chunks, text)
   })
 
-  it('re-splits a large CJK semantic group at sentence boundaries', async () => {
-    const sentence =
-      '这句中文内容专门用来把单个句子长度凑到四十五个字符以上以满足语义分块的溢出测试条件.' // 47 chars, half-width period so the splitter cuts it
-    const text = Array.from({ length: 12 }, () => sentence).join('') // 12 * 47 = 564 chars
-    const chunks = await chunker.chunkText(text, mockEmbedder)
-    expect(chunks.length).toBeGreaterThan(1)
+  it('returns every piece of a split unit, including a tail under minChunkLength', async () => {
+    const text = `${'abcdefghij'.repeat(6)}abcde`
+    const { embedder } = measuredEmbedder(60)
+
+    const chunks = await containmentChunker().chunkText(text, embedder)
+
+    expect(chunks.map((chunk) => chunk.text).join('')).toBe(text)
+    expect(chunks[chunks.length - 1]?.text).toBe('abcde')
     for (const chunk of chunks) {
-      expect(chunk.text.length).toBeLessThanOrEqual(400)
+      expect(text.slice(chunk.sourceStart, chunk.sourceEnd)).toBe(chunk.text)
     }
-    // Sentence boundaries preserved: no chunk splits mid-sentence
+    expectOrderedSpans(chunks, text)
+  })
+
+  it('stores a grapheme that measures over the cap and keeps chunking the rest', async () => {
+    // U+20000 is one grapheme of two UTF-16 code units; the counter makes it
+    // indivisibly oversized, which is the exception stage A cannot reduce.
+    const astral = String.fromCodePoint(0x20000)
+    const head = 'Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu.'
+    const tail = 'Tail sentence also long enough to be its own ordinary chunk in this fixture.'
+    const text = `${head} ${astral}. ${tail}`
+    const { embedder } = measuredEmbedder(30, (piece) =>
+      [...piece].reduce((sum, character) => sum + (character === astral ? 100 : 1), 0)
+    )
+
+    const chunks = await containmentChunker().chunkText(text, embedder)
+
+    expect(chunks.some((chunk) => chunk.text.includes(astral))).toBe(true)
+    const joined = chunks.map((chunk) => chunk.text).join(' ')
+    expect(joined).toContain('Alpha beta gamma')
+    expect(joined).toContain('in this fixture.')
+    expectOrderedSpans(chunks, text)
+  })
+
+  it('keeps rejecting an oversized garbage group', async () => {
+    const { embedder } = measuredEmbedder(30)
+
+    const chunks = await containmentChunker().chunkText('-'.repeat(600), embedder)
+
+    expect(chunks).toEqual([])
+  })
+
+  it('splits an oversized atomic range into pieces with exact offsets', async () => {
+    const text = 'abcdefghij'.repeat(9)
+    const { embedder } = measuredEmbedder(30)
+
+    const chunks = await containmentChunker().chunkText(text, embedder, [
+      { start: 0, end: text.length },
+    ])
+
+    expect(chunks.map((chunk) => chunk.text)).toEqual([
+      text.slice(0, 30),
+      text.slice(30, 60),
+      text.slice(60, 90),
+    ])
     for (const chunk of chunks) {
-      expect(chunk.text.endsWith('.')).toBe(true)
+      expect(text.slice(chunk.sourceStart, chunk.sourceEnd)).toBe(chunk.text)
     }
+    expectOrderedSpans(chunks, text)
   })
 
-  it('leaves oversized Latin text unsplit (behavior unchanged)', async () => {
-    const latin = `lorem ipsum dolor sit amet ${'x'.repeat(860)}`.slice(0, 900)
-    const chunks = await chunker.chunkText(latin, mockEmbedder)
-    expect(chunks.length).toBe(1)
-    expect(chunks[0].text.length).toBeGreaterThan(400)
+  it('produces today’s chunks when the embedder resolves no token limit', async () => {
+    const text = 'abcdefghij'.repeat(12)
+    const { embedder, log } = measuredEmbedder(null)
+
+    const chunks = await containmentChunker().chunkText(text, embedder)
+
+    expect(chunks).toEqual([{ text, index: 0, sourceStart: 0, sourceEnd: text.length }])
+    expect(log.calls).not.toContain('countTokens')
   })
 
-  it('leaves Latin text with an incidental CJK token unsplit', async () => {
-    // A single Japanese product name should not push Latin prose over the
-    // ratio gate (2 CJK chars out of ~900).
-    const mixed = `Feature notes for the Sony α7R V ${'release candidate text '.repeat(36)}`
-    const chunks = await chunker.chunkText(mixed, mockEmbedder)
-    expect(chunks.length).toBe(1)
-    expect(chunks[0].text.length).toBeGreaterThan(400)
+  it('produces today’s chunks for an embedder without the optional members', async () => {
+    const text = 'abcdefghij'.repeat(12)
+    const embedder = { embedBatch: (texts: string[]) => Promise.resolve(texts.map(() => [1, 0])) }
+
+    const chunks = await containmentChunker().chunkText(text, embedder)
+
+    expect(chunks).toEqual([{ text, index: 0, sourceStart: 0, sourceEnd: text.length }])
   })
 })

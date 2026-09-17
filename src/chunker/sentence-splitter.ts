@@ -32,6 +32,14 @@ export interface SentenceUnit {
   atomic: boolean
   sourceStart: number
   sourceEnd: number
+  /**
+   * Set only on pieces produced by token containment splitting. It exempts the
+   * group holding it from the minimum-length filter, because splitting a unit
+   * that overflows the embedding window necessarily produces a short tail.
+   * Kept separate from `atomic`, which means the parser requires a range to
+   * stay whole; the splitter itself never sets this flag.
+   */
+  containmentSplit?: boolean
 }
 
 interface MappedText {
