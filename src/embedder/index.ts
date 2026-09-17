@@ -520,11 +520,6 @@ export class Embedder {
    * second, unguarded route into the pipeline.
    */
   async embed(text: string): Promise<number[]> {
-    // Reject empty input before paying for model init.
-    if (text.length === 0) {
-      throw new EmbeddingError('Cannot generate embedding for empty text')
-    }
-
     const embeddings = await this.embedBatch([text])
     const embedding = embeddings[0]
     if (embedding === undefined) {
