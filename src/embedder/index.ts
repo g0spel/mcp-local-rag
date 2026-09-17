@@ -48,10 +48,21 @@ interface TokenizerOptions {
 }
 
 /** The tokenizer as this module calls it, and as the clamp proxy wraps it. */
-export type PipelineTokenizer = (
-  input: string[],
-  options: TokenizerOptions
-) => { input_ids?: unknown } | null | undefined
+export interface PipelineTokenizer {
+  (input: string[], options: TokenizerOptions): { input_ids?: unknown } | null | undefined
+  /**
+   * The tokenizer's reported length limit. Optional and `unknown` because a
+   * model may omit it or report the `1e30` sentinel, so
+   * {@link usableTokenLimit} stays the load-bearing check.
+   */
+  model_max_length?: unknown
+}
+
+/** The model config surface the clamp reads for the position window. */
+interface PipelineModelConfig {
+  /** Optional and `unknown` for the same reason as `model_max_length`. */
+  max_position_embeddings?: unknown
+}
 
 /**
  * The transformers.js pipeline as this module calls it.
@@ -68,6 +79,12 @@ interface EmbeddingPipeline {
     options: unknown
   ): Promise<{ data?: unknown; dims?: unknown } | null | undefined>
   tokenizer: PipelineTokenizer
+  /**
+   * The loaded model handle. Optional because the guard does not check it: a
+   * model reporting no position window takes the tokenizer-only branch of the
+   * limit table rather than being rejected.
+   */
+  model?: { config?: PipelineModelConfig }
 }
 
 /** True when the loaded pipeline exposes the call and tokenizer surface used here. */
@@ -111,10 +128,8 @@ function usableTokenLimit(value: unknown): number | null {
   return value >= 1 && value <= MAX_PLAUSIBLE_TOKENS ? Math.floor(value) : null
 }
 
-function readPositionWindow(candidate: unknown): number | null {
-  const model = isObjectLike(candidate) ? candidate['model'] : undefined
-  const config = isObjectLike(model) ? model['config'] : undefined
-  return isObjectLike(config) ? usableTokenLimit(config['max_position_embeddings']) : null
+function readPositionWindow(candidate: EmbeddingPipeline): number | null {
+  return usableTokenLimit(candidate.model?.config?.max_position_embeddings)
 }
 
 function resolveEffectiveCap(
@@ -159,9 +174,7 @@ export function installTokenLimitClamp(candidate: unknown): TokenLimitClamp {
   }
 
   const measurementTokenizer = candidate.tokenizer
-  const tokenizerLimit = usableTokenLimit(
-    isObjectLike(measurementTokenizer) ? measurementTokenizer['model_max_length'] : undefined
-  )
+  const tokenizerLimit = usableTokenLimit(measurementTokenizer.model_max_length)
   const tokenLimit = resolveEffectiveCap(readPositionWindow(candidate), tokenizerLimit)
   if (tokenLimit === null) {
     return { tokenLimit: null, measurementTokenizer }
@@ -265,6 +278,10 @@ export class Embedder {
   // Using unknown to avoid TS2590 (union type too complex with @types/jsdom)
   private model: unknown = null
   private initPromise: Promise<void> | null = null
+  /** The resolved cap, or `null` before initialization and in degraded mode. */
+  private tokenLimit: number | null = null
+  /** The pre-clamp tokenizer, so measurement never reports clamped lengths. */
+  private measurementTokenizer: PipelineTokenizer | null = null
   private readonly config: EmbedderConfig
 
   constructor(config: EmbedderConfig) {
@@ -286,6 +303,8 @@ export class Embedder {
     }
     this.model = null
     this.initPromise = null
+    this.tokenLimit = null
+    this.measurementTokenizer = null
   }
 
   /**
@@ -318,7 +337,9 @@ export class Embedder {
         // biome-ignore lint/nursery/noUnsafeTypeAssertion: un-allowlisted passthrough to a closed literal union
         device: device as DeviceType,
       })
-      installTokenLimitClamp(this.model)
+      const clamp = installTokenLimitClamp(this.model)
+      this.tokenLimit = clamp.tokenLimit
+      this.measurementTokenizer = clamp.measurementTokenizer
       console.error(`Embedder: Model loaded successfully (device=${device})`)
     } catch (error) {
       const nativeError = toError(error)
@@ -389,6 +410,52 @@ export class Embedder {
     })
 
     await this.initPromise
+  }
+
+  /**
+   * The effective token cap for this model, or `null` in degraded mode (no cap
+   * could be resolved, so callers have no limit to size inputs against).
+   *
+   * Asynchronous and self-initializing because the value exists only after the
+   * model loads and `ensureInitialized()` is private, so a caller that needs
+   * the cap before the first embedding has no other way to reach it.
+   */
+  async getTokenLimit(): Promise<number | null> {
+    await this.ensureInitialized()
+    return this.tokenLimit
+  }
+
+  /**
+   * The true token length of each text, in input order.
+   *
+   * Measured with `truncation: false` through the tokenizer captured before the
+   * clamp proxy was installed, so a returned length is the input's real length
+   * and a length above {@link getTokenLimit} means inference will truncate.
+   * Tokenization only — no model inference.
+   *
+   * Throws when no measurement tokenizer was captured (an unrecognized pipeline
+   * shape): a length measured through an unknown tokenizer surface cannot be
+   * trusted, and silently returning one would misreport truncation.
+   */
+  async countTokens(texts: string[]): Promise<number[]> {
+    // Nothing to measure → skip model init entirely, as embedBatch does.
+    if (texts.length === 0) {
+      return []
+    }
+
+    await this.ensureInitialized()
+
+    const tokenizer = this.measurementTokenizer
+    if (tokenizer === null) {
+      throw new EmbeddingError('Embedder tokenizer is unavailable for measurement')
+    }
+
+    const tokenized = tokenizer(texts, { padding: false, truncation: false, return_tensor: false })
+    const inputIds = tokenized?.input_ids
+    if (!isTokenLengthArray(inputIds) || inputIds.length !== texts.length) {
+      throw new EmbeddingError('Unexpected embedder tokenizer output shape')
+    }
+    return inputIds.map((ids) => ids.length)
   }
 
   /** Single-text embedding; the vector dimension depends on the model. */
