@@ -1,7 +1,7 @@
-// Truncation reporting and degraded-mode reporting (AC-005, AC-007).
+// Truncation reporting and degraded-mode reporting (AC-005, AC-006, AC-007).
 //
 // Fake pipelines are handed to the instance the way `initialize()` does, so the
-// warnings are observed through `embedBatch`/`getTokenLimit` without a model
+// warnings are observed through `embed`/`embedBatch`/`getTokenLimit` without a model
 // download. Mocking `@huggingface/transformers` would leak across files
 // (`isolate: false`, see lazy-initialization.test.ts).
 
@@ -83,6 +83,23 @@ describe('Embedder truncation reporting', () => {
     expect(expectDefined(warnings[0])).toContain('512')
     expect(expectDefined(warnings[0])).toContain('600')
     expect(first).toEqual([[1], [1]])
+  })
+
+  it('reports truncation for a query embedded through embed() (AC-006)', async () => {
+    const stderr = spyOnStderr()
+    const { embedder, modelCalls } = createEmbedderWithFakePipeline({
+      tokenLengths: { 'oversized query': 600 },
+      modelMaxLength: 512,
+    })
+
+    const embedding = await embedder.embed('oversized query')
+
+    expect(embedding).toEqual([1])
+    expect(modelCalls).toEqual([['oversized query']])
+    const warnings = warningsMatching(stderr, TRUNCATION_WARNING)
+    expect(warnings).toHaveLength(1)
+    expect(expectDefined(warnings[0])).toContain('512')
+    expect(expectDefined(warnings[0])).toContain('600')
   })
 
   it('does not warn for an input exactly at the cap', async () => {

@@ -73,7 +73,6 @@ interface PipelineModelConfig {
  * check load-bearing rather than dead under an optimistic declaration.
  */
 interface EmbeddingPipeline {
-  (input: string, options: unknown): Promise<{ data?: unknown; dims?: unknown } | null | undefined>
   (
     input: string[],
     options: unknown
@@ -513,35 +512,25 @@ export class Embedder {
     return inputIds.map((ids) => ids.length)
   }
 
-  /** Single-text embedding; the vector dimension depends on the model. */
+  /**
+   * Single-text embedding; the vector dimension depends on the model.
+   *
+   * Delegates to {@link embedBatch} so the query path shares one clamp, one
+   * measurement, and one truncation warning with ingestion instead of taking a
+   * second, unguarded route into the pipeline.
+   */
   async embed(text: string): Promise<number[]> {
     // Reject empty input before paying for model init.
     if (text.length === 0) {
       throw new EmbeddingError('Cannot generate embedding for empty text')
     }
 
-    // Lazy initialization: initialize on first use if not already initialized
-    await this.ensureInitialized()
-
-    try {
-      const options = { pooling: 'mean', normalize: true }
-      if (!isEmbeddingPipeline(this.model)) {
-        throw new EmbeddingError('Embedder pipeline is not callable')
-      }
-      const output = await this.model(text, options)
-      const data = output?.data
-      if (!(data instanceof Float32Array)) {
-        throw new EmbeddingError('Unexpected embedder output shape')
-      }
-      return Array.from(data)
-    } catch (error) {
-      if (error instanceof EmbeddingError) {
-        throw error
-      }
-      throw new EmbeddingError(`Failed to generate embedding: ${toError(error).message}`, {
-        cause: toError(error),
-      })
+    const embeddings = await this.embedBatch([text])
+    const embedding = embeddings[0]
+    if (embedding === undefined) {
+      throw new EmbeddingError('Missing embedder batch output row')
     }
+    return embedding
   }
 
   /** Batched embedding; the vector dimension depends on the model. */
@@ -551,8 +540,8 @@ export class Embedder {
       return []
     }
 
-    // Preserve embed()'s empty-text contract for batch elements (the previous
-    // per-text implementation rejected empty strings via embed()).
+    // Empty text has no embedding to compute, and `embed()` delegates here, so
+    // this is the single owner of that rejection for every caller.
     if (texts.some((text) => text.length === 0)) {
       throw new EmbeddingError('Cannot generate embedding for empty text')
     }
