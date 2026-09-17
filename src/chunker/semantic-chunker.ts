@@ -89,6 +89,103 @@ export function isGarbageChunk(text: string): boolean {
 /** Default minimum chunk length in characters */
 export const DEFAULT_MIN_CHUNK_LENGTH = 50
 
+/**
+ * CJK scripts (Hiragana, Katakana, CJK ideographs + ext-A, Hangul).
+ * CJK text runs close to one token per character, so a sentence unit or
+ * semantic group sized for Latin content (500-1000 chars) can exceed a
+ * BERT-family embedding model's 512-position window and crash ONNX
+ * inference with a broadcast error. See `splitOversizedCjkUnits` and
+ * `appendCjkSplitChunks`.
+ */
+const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/
+
+/**
+ * Max characters per CJK sentence unit / chunk. Kept under the 512-position
+ * window common to BERT-family embedding models, with headroom for tokens
+ * that expand past 1:1 (sub-word splits, punctuation).
+ */
+const MAX_CJK_CHUNK_CHARS = 400
+
+/**
+ * Split oversized CJK sentence units (table rows, unpunctuated prose, code
+ * spans) before sentence-level embedding. Non-CJK units pass through
+ * unchanged so Latin behavior is unaffected.
+ */
+function splitOversizedCjkUnits(units: SentenceUnit[]): SentenceUnit[] {
+  const safe: SentenceUnit[] = []
+  for (const unit of units) {
+    if (CJK_RE.test(unit.text) && unit.text.length > MAX_CJK_CHUNK_CHARS) {
+      for (let s = 0; s < unit.text.length; s += MAX_CJK_CHUNK_CHARS) {
+        safe.push({
+          ...unit,
+          text: unit.text.slice(s, s + MAX_CJK_CHUNK_CHARS),
+          sourceStart: unit.sourceStart + s,
+          sourceEnd: Math.min(unit.sourceEnd, unit.sourceStart + s + MAX_CJK_CHUNK_CHARS),
+        })
+      }
+    } else {
+      safe.push(unit)
+    }
+  }
+  return safe
+}
+
+/**
+ * Append chunks for an oversized CJK semantic group: re-split at sentence
+ * boundaries first, hard-split a single oversized sentence unit. Returns the
+ * next chunk index. Non-CJK groups never reach this path.
+ */
+function appendCjkSplitChunks(group: SentenceUnit[], chunks: TextChunk[], startIndex: number): number {
+  let chunkIndex = startIndex
+  let sub: SentenceUnit[] = []
+  let subLen = 0
+  const flushSub = () => {
+    if (sub.length === 0) {
+      return
+    }
+    const first = sub[0]
+    const last = sub[sub.length - 1]
+    if (!first || !last) {
+      return
+    }
+    const text = sub.map((unit) => unit.text).join(' ')
+    if (!isGarbageChunk(text)) {
+      chunks.push({
+        text,
+        index: chunkIndex++,
+        sourceStart: first.sourceStart,
+        sourceEnd: last.sourceEnd,
+      })
+    }
+    sub = []
+    subLen = 0
+  }
+  for (const unit of group) {
+    if (unit.text.length > MAX_CJK_CHUNK_CHARS) {
+      flushSub()
+      for (let s = 0; s < unit.text.length; s += MAX_CJK_CHUNK_CHARS) {
+        const piece = unit.text.slice(s, s + MAX_CJK_CHUNK_CHARS)
+        if (!isGarbageChunk(piece)) {
+          chunks.push({
+            text: piece,
+            index: chunkIndex++,
+            sourceStart: unit.sourceStart + s,
+            sourceEnd: Math.min(unit.sourceEnd, unit.sourceStart + s + MAX_CJK_CHUNK_CHARS),
+          })
+        }
+      }
+      continue
+    }
+    if (subLen + unit.text.length > MAX_CJK_CHUNK_CHARS && sub.length > 0) {
+      flushSub()
+    }
+    sub.push(unit)
+    subLen += unit.text.length + 1
+  }
+  flushSub()
+  return chunkIndex
+}
+
 const DEFAULT_SEMANTIC_CHUNKER_CONFIG: SemanticChunkerConfig = {
   hardThreshold: 0.6,
   initConst: 1.5,
@@ -131,10 +228,14 @@ export class SemanticChunker {
     }
 
     // Split into sentences
-    const sentenceUnits = splitIntoSentenceUnits(text, atomicRanges)
+    let sentenceUnits = splitIntoSentenceUnits(text, atomicRanges)
     if (sentenceUnits.length === 0) {
       return []
     }
+
+    // CJK safety: a single sentence unit can exceed the embedding model's
+    // position window on its own, before any grouping happens
+    sentenceUnits = splitOversizedCjkUnits(sentenceUnits)
 
     // Generate embeddings for all sentences
     const embeddings = await embedder.embedBatch(sentenceUnits.map((unit) => unit.text))
@@ -160,6 +261,16 @@ export class SemanticChunker {
         if (!firstUnit || !lastUnit) {
           continue
         }
+
+        // CJK safety: semantic groups carry no length cap, and CJK text runs
+        // ~1 token per character, so a group can exceed the embedding
+        // model's position window. Re-split oversized CJK groups; non-CJK
+        // text keeps the original single-chunk behavior.
+        if (CJK_RE.test(chunkText) && chunkText.length > MAX_CJK_CHUNK_CHARS) {
+          chunkIndex = appendCjkSplitChunks(group, chunks, chunkIndex)
+          continue
+        }
+
         chunks.push({
           text: chunkText,
           index: chunkIndex,
