@@ -90,7 +90,7 @@ Ingest a single file or all supported files under a directory.
 Options:
   --base-dir <path>          Base directory for documents (repeatable: pass once per root; default: BASE_DIRS/BASE_DIR env or cwd)
   --max-file-size <n>        Max file size in bytes (default: ${INGEST_DEFAULTS.maxFileSize})
-  --chunk-min-length <n>     Minimum chunk length in characters (default: 50, range: 1-${MAX_CHUNK_MIN_LENGTH})
+  --chunk-min-length <n>     Minimum ordinary chunk length in characters (default: 50, range: 1-${MAX_CHUNK_MIN_LENGTH}); a fragment of content split to fit the model's token limit can be shorter
   --visual                   Enable VLM captioning for PDF figure pages (PDFs only; no effect on other types)
   --images                   Store bounded PDF figures/tables and Mammoth DOCX images
   --visual-quality <profile> VLM profile when --visual is set: fast (default, lightweight) or quality (Qwen2.5-VL-3B, ~10x cache, ~2x inference)
