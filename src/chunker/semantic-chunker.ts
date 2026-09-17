@@ -89,6 +89,132 @@ export function isGarbageChunk(text: string): boolean {
 /** Default minimum chunk length in characters */
 export const DEFAULT_MIN_CHUNK_LENGTH = 50
 
+/**
+ * CJK scripts (Hiragana, Katakana, CJK ideographs + ext-A, Hangul).
+ * CJK text runs close to one token per character, so a sentence unit or
+ * semantic group sized for Latin content (500-1000 chars) can exceed a
+ * BERT-family embedding model's 512-position window and crash ONNX
+ * inference with a broadcast error. See `splitOversizedCjkUnits` and
+ * `appendCjkSplitChunks`.
+ */
+const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/
+
+/**
+ * Fraction of CJK characters at or above which text is treated as CJK for the
+ * length guards. A ratio gate (rather than "contains any") keeps Latin prose
+ * carrying an incidental CJK product name from being re-split.
+ */
+const CJK_RATIO_THRESHOLD = 0.3
+
+/** Whether enough of `text` is CJK to apply the chunk-length guards. */
+function isCjkText(text: string): boolean {
+  let total = 0
+  let cjk = 0
+  for (const ch of text) {
+    total++
+    if (CJK_RE.test(ch)) {
+      cjk++
+    }
+  }
+  return total > 0 && cjk / total >= CJK_RATIO_THRESHOLD
+}
+
+/**
+ * Max characters per CJK sentence unit / chunk. Kept under the 512-position
+ * window common to BERT-family embedding models, with headroom for tokens
+ * that expand past 1:1 (sub-word splits, punctuation).
+ */
+const MAX_CJK_CHUNK_CHARS = 400
+
+/**
+ * Split oversized CJK sentence units (table rows, unpunctuated prose, code
+ * spans) before sentence-level embedding. Non-CJK units pass through
+ * unchanged so Latin behavior is unaffected.
+ */
+function splitOversizedCjkUnits(units: SentenceUnit[]): SentenceUnit[] {
+  const safe: SentenceUnit[] = []
+  for (const unit of units) {
+    if (isCjkText(unit.text) && unit.text.length > MAX_CJK_CHUNK_CHARS) {
+      for (let s = 0; s < unit.text.length; s += MAX_CJK_CHUNK_CHARS) {
+        safe.push({
+          ...unit,
+          text: unit.text.slice(s, s + MAX_CJK_CHUNK_CHARS),
+          sourceStart: unit.sourceStart + s,
+          sourceEnd: Math.min(unit.sourceEnd, unit.sourceStart + s + MAX_CJK_CHUNK_CHARS),
+        })
+      }
+    } else {
+      safe.push(unit)
+    }
+  }
+  return safe
+}
+
+/**
+ * Append chunks for an oversized CJK semantic group: re-split at sentence
+ * boundaries first, hard-split a single oversized sentence unit. Returns the
+ * next chunk index. Non-CJK groups never reach this path.
+ */
+function appendCjkSplitChunks(
+  group: SentenceUnit[],
+  chunks: TextChunk[],
+  startIndex: number
+): number {
+  let chunkIndex = startIndex
+  let sub: SentenceUnit[] = []
+  let subLen = 0
+  const flushSub = (): void => {
+    if (sub.length === 0) {
+      return
+    }
+    const first = sub[0]
+    const last = sub[sub.length - 1]
+    if (!first || !last) {
+      return
+    }
+    const text = sub.map((unit) => unit.text).join(' ')
+    if (!isGarbageChunk(text)) {
+      chunks.push({
+        text,
+        index: chunkIndex++,
+        sourceStart: first.sourceStart,
+        sourceEnd: last.sourceEnd,
+      })
+    }
+    sub = []
+    subLen = 0
+  }
+  // An oversized atomic unit (table row, code span) cannot be embedded whole
+  // within the position window, so splitting it is the only option; the pieces
+  // keep the atomic flag. Atomic units are stored trimmed, so offsets into a
+  // split piece can drift by the trimmed leading whitespace (bounded, and
+  // only affects the oversized-recovery path).
+  for (const unit of group) {
+    if (unit.text.length > MAX_CJK_CHUNK_CHARS) {
+      flushSub()
+      for (let s = 0; s < unit.text.length; s += MAX_CJK_CHUNK_CHARS) {
+        const piece = unit.text.slice(s, s + MAX_CJK_CHUNK_CHARS)
+        if (!isGarbageChunk(piece)) {
+          chunks.push({
+            text: piece,
+            index: chunkIndex++,
+            sourceStart: unit.sourceStart + s,
+            sourceEnd: Math.min(unit.sourceEnd, unit.sourceStart + s + MAX_CJK_CHUNK_CHARS),
+          })
+        }
+      }
+      continue
+    }
+    if (subLen + unit.text.length > MAX_CJK_CHUNK_CHARS && sub.length > 0) {
+      flushSub()
+    }
+    sub.push(unit)
+    subLen += unit.text.length + 1
+  }
+  flushSub()
+  return chunkIndex
+}
+
 const DEFAULT_SEMANTIC_CHUNKER_CONFIG: SemanticChunkerConfig = {
   hardThreshold: 0.6,
   initConst: 1.5,
@@ -131,10 +257,14 @@ export class SemanticChunker {
     }
 
     // Split into sentences
-    const sentenceUnits = splitIntoSentenceUnits(text, atomicRanges)
+    let sentenceUnits = splitIntoSentenceUnits(text, atomicRanges)
     if (sentenceUnits.length === 0) {
       return []
     }
+
+    // CJK safety: a single sentence unit can exceed the embedding model's
+    // position window on its own, before any grouping happens
+    sentenceUnits = splitOversizedCjkUnits(sentenceUnits)
 
     // Generate embeddings for all sentences
     const embeddings = await embedder.embedBatch(sentenceUnits.map((unit) => unit.text))
@@ -142,7 +272,17 @@ export class SemanticChunker {
     // Apply Max-Min algorithm to group sentences into chunks
     const sentenceGroups = this.groupSentences(sentenceUnits, embeddings)
 
-    // Convert groups to TextChunks
+    return this.convertGroupsToChunks(sentenceGroups)
+  }
+
+  /**
+   * Convert sentence groups into TextChunks, applying the CJK length guard:
+   * semantic groups carry no length cap, and CJK text runs ~1 token per
+   * character, so an oversized group can exceed the embedding model's
+   * position window. Oversized CJK groups are re-split at sentence
+   * boundaries; everything else keeps the single-chunk behavior.
+   */
+  private convertGroupsToChunks(sentenceGroups: SentenceUnit[][]): TextChunk[] {
     const chunks: TextChunk[] = []
     let chunkIndex = 0
 
@@ -160,6 +300,12 @@ export class SemanticChunker {
         if (!firstUnit || !lastUnit) {
           continue
         }
+
+        if (isCjkText(chunkText) && chunkText.length > MAX_CJK_CHUNK_CHARS) {
+          chunkIndex = appendCjkSplitChunks(group, chunks, chunkIndex)
+          continue
+        }
+
         chunks.push({
           text: chunkText,
           index: chunkIndex,

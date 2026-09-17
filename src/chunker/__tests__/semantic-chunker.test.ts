@@ -505,3 +505,65 @@ describe('isGarbageChunk', () => {
     })
   })
 })
+
+// --------------------------------------------
+// CJK chunk-length safety (position-window overflow)
+// --------------------------------------------
+describe('CJK chunk-length safety', () => {
+  let chunker: SemanticChunker
+  let mockEmbedder: { embedBatch: (texts: string[]) => Promise<number[][]> }
+
+  beforeEach(() => {
+    chunker = new SemanticChunker({
+      hardThreshold: 0.6,
+      initConst: 1.5,
+      c: 0.9,
+      minChunkLength: 50,
+    })
+    // Identical unit vectors: every sentence is maximally similar, so all
+    // units land in one semantic group — the worst case for length overflow.
+    mockEmbedder = {
+      embedBatch: async (texts) => texts.map(() => [1, 0]),
+    }
+  })
+
+  it('splits a single unpunctuated CJK sentence longer than the cap', async () => {
+    const text = '一二三四五六七八九十'.repeat(90) // 900 chars, <80% single-char repetition
+    const chunks = await chunker.chunkText(text, mockEmbedder)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const chunk of chunks) {
+      expect(chunk.text.length).toBeLessThanOrEqual(400)
+    }
+  })
+
+  it('re-splits a large CJK semantic group at sentence boundaries', async () => {
+    const sentence =
+      '这句中文内容专门用来把单个句子长度凑到四十五个字符以上以满足语义分块的溢出测试条件.' // 47 chars, half-width period so the splitter cuts it
+    const text = Array.from({ length: 12 }, () => sentence).join('') // 12 * 47 = 564 chars
+    const chunks = await chunker.chunkText(text, mockEmbedder)
+    expect(chunks.length).toBeGreaterThan(1)
+    for (const chunk of chunks) {
+      expect(chunk.text.length).toBeLessThanOrEqual(400)
+    }
+    // Sentence boundaries preserved: no chunk splits mid-sentence
+    for (const chunk of chunks) {
+      expect(chunk.text.endsWith('.')).toBe(true)
+    }
+  })
+
+  it('leaves oversized Latin text unsplit (behavior unchanged)', async () => {
+    const latin = `lorem ipsum dolor sit amet ${'x'.repeat(860)}`.slice(0, 900)
+    const chunks = await chunker.chunkText(latin, mockEmbedder)
+    expect(chunks.length).toBe(1)
+    expect(chunks[0].text.length).toBeGreaterThan(400)
+  })
+
+  it('leaves Latin text with an incidental CJK token unsplit', async () => {
+    // A single Japanese product name should not push Latin prose over the
+    // ratio gate (2 CJK chars out of ~900).
+    const mixed = `Feature notes for the Sony α7R V ${'release candidate text '.repeat(36)}`
+    const chunks = await chunker.chunkText(mixed, mockEmbedder)
+    expect(chunks.length).toBe(1)
+    expect(chunks[0].text.length).toBeGreaterThan(400)
+  })
+})
