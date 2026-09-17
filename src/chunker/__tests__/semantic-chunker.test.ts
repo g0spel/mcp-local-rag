@@ -552,9 +552,17 @@ describe('CJK chunk-length safety', () => {
   })
 
   it('leaves oversized Latin text unsplit (behavior unchanged)', async () => {
-    const text = `word ${'a'.repeat(60)}`.replace(/^word /, 'word ') // long single Latin sentence
-    const latin = ('lorem ipsum dolor sit amet ' + 'x'.repeat(860)).slice(0, 900)
+    const latin = `lorem ipsum dolor sit amet ${'x'.repeat(860)}`.slice(0, 900)
     const chunks = await chunker.chunkText(latin, mockEmbedder)
+    expect(chunks.length).toBe(1)
+    expect(chunks[0].text.length).toBeGreaterThan(400)
+  })
+
+  it('leaves Latin text with an incidental CJK token unsplit', async () => {
+    // A single Japanese product name should not push Latin prose over the
+    // ratio gate (2 CJK chars out of ~900).
+    const mixed = `Feature notes for the Sony α7R V ${'release candidate text '.repeat(36)}`
+    const chunks = await chunker.chunkText(mixed, mockEmbedder)
     expect(chunks.length).toBe(1)
     expect(chunks[0].text.length).toBeGreaterThan(400)
   })

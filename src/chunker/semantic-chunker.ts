@@ -100,6 +100,26 @@ export const DEFAULT_MIN_CHUNK_LENGTH = 50
 const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/
 
 /**
+ * Fraction of CJK characters at or above which text is treated as CJK for the
+ * length guards. A ratio gate (rather than "contains any") keeps Latin prose
+ * carrying an incidental CJK product name from being re-split.
+ */
+const CJK_RATIO_THRESHOLD = 0.3
+
+/** Whether enough of `text` is CJK to apply the chunk-length guards. */
+function isCjkText(text: string): boolean {
+  let total = 0
+  let cjk = 0
+  for (const ch of text) {
+    total++
+    if (CJK_RE.test(ch)) {
+      cjk++
+    }
+  }
+  return total > 0 && cjk / total >= CJK_RATIO_THRESHOLD
+}
+
+/**
  * Max characters per CJK sentence unit / chunk. Kept under the 512-position
  * window common to BERT-family embedding models, with headroom for tokens
  * that expand past 1:1 (sub-word splits, punctuation).
@@ -114,7 +134,7 @@ const MAX_CJK_CHUNK_CHARS = 400
 function splitOversizedCjkUnits(units: SentenceUnit[]): SentenceUnit[] {
   const safe: SentenceUnit[] = []
   for (const unit of units) {
-    if (CJK_RE.test(unit.text) && unit.text.length > MAX_CJK_CHUNK_CHARS) {
+    if (isCjkText(unit.text) && unit.text.length > MAX_CJK_CHUNK_CHARS) {
       for (let s = 0; s < unit.text.length; s += MAX_CJK_CHUNK_CHARS) {
         safe.push({
           ...unit,
@@ -135,11 +155,15 @@ function splitOversizedCjkUnits(units: SentenceUnit[]): SentenceUnit[] {
  * boundaries first, hard-split a single oversized sentence unit. Returns the
  * next chunk index. Non-CJK groups never reach this path.
  */
-function appendCjkSplitChunks(group: SentenceUnit[], chunks: TextChunk[], startIndex: number): number {
+function appendCjkSplitChunks(
+  group: SentenceUnit[],
+  chunks: TextChunk[],
+  startIndex: number
+): number {
   let chunkIndex = startIndex
   let sub: SentenceUnit[] = []
   let subLen = 0
-  const flushSub = () => {
+  const flushSub = (): void => {
     if (sub.length === 0) {
       return
     }
@@ -160,6 +184,11 @@ function appendCjkSplitChunks(group: SentenceUnit[], chunks: TextChunk[], startI
     sub = []
     subLen = 0
   }
+  // An oversized atomic unit (table row, code span) cannot be embedded whole
+  // within the position window, so splitting it is the only option; the pieces
+  // keep the atomic flag. Atomic units are stored trimmed, so offsets into a
+  // split piece can drift by the trimmed leading whitespace (bounded, and
+  // only affects the oversized-recovery path).
   for (const unit of group) {
     if (unit.text.length > MAX_CJK_CHUNK_CHARS) {
       flushSub()
@@ -243,7 +272,17 @@ export class SemanticChunker {
     // Apply Max-Min algorithm to group sentences into chunks
     const sentenceGroups = this.groupSentences(sentenceUnits, embeddings)
 
-    // Convert groups to TextChunks
+    return this.convertGroupsToChunks(sentenceGroups)
+  }
+
+  /**
+   * Convert sentence groups into TextChunks, applying the CJK length guard:
+   * semantic groups carry no length cap, and CJK text runs ~1 token per
+   * character, so an oversized group can exceed the embedding model's
+   * position window. Oversized CJK groups are re-split at sentence
+   * boundaries; everything else keeps the single-chunk behavior.
+   */
+  private convertGroupsToChunks(sentenceGroups: SentenceUnit[][]): TextChunk[] {
     const chunks: TextChunk[] = []
     let chunkIndex = 0
 
@@ -262,11 +301,7 @@ export class SemanticChunker {
           continue
         }
 
-        // CJK safety: semantic groups carry no length cap, and CJK text runs
-        // ~1 token per character, so a group can exceed the embedding
-        // model's position window. Re-split oversized CJK groups; non-CJK
-        // text keeps the original single-chunk behavior.
-        if (CJK_RE.test(chunkText) && chunkText.length > MAX_CJK_CHUNK_CHARS) {
+        if (isCjkText(chunkText) && chunkText.length > MAX_CJK_CHUNK_CHARS) {
           chunkIndex = appendCjkSplitChunks(group, chunks, chunkIndex)
           continue
         }
