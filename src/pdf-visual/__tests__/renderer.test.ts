@@ -22,7 +22,7 @@ function buildMinimalPdfBytes(width = 100, height = 100): Uint8Array {
     const contents = new mupdf.Buffer()
     const pageObj = pdf.addPage([0, 0, width, height], 0, resources, contents)
     pdf.insertPage(-1, pageObj)
-    return pdf.saveToBuffer().asUint8Array()
+    return pdf.saveToBuffer('').asUint8Array()
   } finally {
     pdf.destroy()
   }
