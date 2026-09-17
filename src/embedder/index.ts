@@ -282,6 +282,14 @@ export class Embedder {
   private tokenLimit: number | null = null
   /** The pre-clamp tokenizer, so measurement never reports clamped lengths. */
   private measurementTokenizer: PipelineTokenizer | null = null
+  /**
+   * One-shot flags, owned by the instance rather than the module: each state is
+   * a property of this embedder's model, and a second instance loading another
+   * model must be able to report it. They survive `dispose()` for the same
+   * reason the warnings exist — to be read once, not once per re-initialization.
+   */
+  private truncationWarned: boolean = false
+  private degradedModeWarned: boolean = false
   private readonly config: EmbedderConfig
 
   constructor(config: EmbedderConfig) {
@@ -422,7 +430,54 @@ export class Embedder {
    */
   async getTokenLimit(): Promise<number | null> {
     await this.ensureInitialized()
+    if (this.tokenLimit === null) {
+      this.warnDegradedMode()
+    }
     return this.tokenLimit
+  }
+
+  /**
+   * Report degraded mode once: no cap was resolved, so nothing bounds input
+   * length and no clamp protects inference. Warning here rather than in
+   * `initialize()` puts it at the point where the state becomes observable —
+   * every consumer of the cap, including `embedBatch`, reads it through here.
+   */
+  private warnDegradedMode(): void {
+    if (this.degradedModeWarned) {
+      return
+    }
+    this.degradedModeWarned = true
+    console.error(
+      `Embedder: no position-window token limit could be resolved for model "${this.config.modelPath}". Inputs are not length-guarded and oversized input may fail at inference.`
+    )
+  }
+
+  /**
+   * The lengths batch planning runs on: `min(trueLength, cap)`, which is the
+   * length the clamped pipeline actually feeds the model. Padding cost is
+   * therefore estimated on real work rather than on content the clamp discards.
+   *
+   * Emits this instance's one-shot truncation warning when a true length
+   * exceeds the cap, naming the cap and the longest observed length.
+   */
+  private async planTokenLengths(texts: string[]): Promise<number[]> {
+    const tokenLimit = await this.getTokenLimit()
+    const trueLengths = await this.countTokens(texts)
+    if (tokenLimit === null) {
+      return trueLengths
+    }
+
+    let longestObserved = 0
+    for (const length of trueLengths) {
+      longestObserved = Math.max(longestObserved, length)
+    }
+    if (longestObserved > tokenLimit && !this.truncationWarned) {
+      this.truncationWarned = true
+      console.error(
+        `Embedder: input exceeds the model token limit of ${tokenLimit} tokens (longest input measured ${longestObserved} tokens). Text past the limit is truncated before embedding.`
+      )
+    }
+    return trueLengths.map((length) => Math.min(length, tokenLimit))
   }
 
   /**
@@ -516,6 +571,10 @@ export class Embedder {
         throw new EmbeddingError('Embedder pipeline is not callable')
       }
       const modelCall = this.model
+      // One measurement for the whole call, through the single `countTokens`
+      // implementation, so batch planning and truncation reporting cannot
+      // disagree about a length.
+      const plannedLengths = await this.planTokenLengths(texts)
       const embeddings: (number[] | undefined)[] = Array.from({ length: texts.length })
       const deferred: IndexedEmbeddingInput[] = []
 
@@ -546,22 +605,13 @@ export class Embedder {
 
       for (let i = 0; i < texts.length; i += this.config.batchSize) {
         const batchTexts = texts.slice(i, i + this.config.batchSize)
-        const tokenized = modelCall.tokenizer(batchTexts, {
-          padding: false,
-          truncation: true,
-          return_tensor: false,
-        })
-        const inputIds = tokenized?.input_ids
-        if (!isTokenLengthArray(inputIds) || inputIds.length !== batchTexts.length) {
-          throw new EmbeddingError('Unexpected embedder tokenizer output shape')
-        }
-
         const indexedInputs = batchTexts.map((text, batchIndex) => {
-          const ids = inputIds[batchIndex]
-          if (ids === undefined) {
+          const originalIndex = i + batchIndex
+          const tokenLength = plannedLengths[originalIndex]
+          if (tokenLength === undefined) {
             throw new EmbeddingError('Unexpected embedder tokenizer output shape')
           }
-          return { text, originalIndex: i + batchIndex, tokenLength: ids.length }
+          return { text, originalIndex, tokenLength }
         })
         const selected = deferBatchOutliers(indexedInputs)
         deferred.push(...selected.deferred)

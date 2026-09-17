@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { expectDefined, privateMembers } from '../../__tests__/test-doubles.js'
-import { Embedder } from '../index.js'
+import type { PipelineTokenizer } from '../index.js'
+import { Embedder, installTokenLimitClamp } from '../index.js'
 
 interface FakePipeline {
   (texts: string[]): Promise<{ data: Float32Array; dims: number[] }>
@@ -16,6 +17,14 @@ function createEmbedderWithFakePipeline(tokenLengths: Record<string, number>): {
 } {
   const modelCalls: string[][] = []
   const vectorValues = new Map(Object.keys(tokenLengths).map((text, index) => [text, index + 1]))
+  const tokenizer = Object.assign(
+    (texts: string[]) => ({
+      input_ids: texts.map((text) => Array.from({ length: tokenLengths[text] ?? 1 }, () => 1)),
+    }),
+    // Every fixture length sits far below this, so the cap never rewrites a
+    // planned length: the deferral math is what these cases observe.
+    { model_max_length: 512 }
+  )
   const pipeline = Object.assign(
     async (texts: string[]) => {
       modelCalls.push([...texts])
@@ -24,11 +33,7 @@ function createEmbedderWithFakePipeline(tokenLengths: Record<string, number>): {
         dims: [texts.length, 1],
       }
     },
-    {
-      tokenizer: (texts: string[]) => ({
-        input_ids: texts.map((text) => Array.from({ length: tokenLengths[text] ?? 1 }, () => 1)),
-      }),
-    }
+    { tokenizer }
   ) satisfies FakePipeline
 
   const embedder = new Embedder({
@@ -36,7 +41,17 @@ function createEmbedderWithFakePipeline(tokenLengths: Record<string, number>): {
     batchSize: 16,
     cacheDir: 'unused-by-fake-pipeline',
   })
-  privateMembers<{ model: FakePipeline }>(embedder).model = pipeline
+  // Mirror `initialize()`: install the clamp on the fake and hand the embedder
+  // the same two values, so measurement runs the production path.
+  const clamp = installTokenLimitClamp(pipeline)
+  const members = privateMembers<{
+    model: FakePipeline
+    tokenLimit: number | null
+    measurementTokenizer: PipelineTokenizer | null
+  }>(embedder)
+  members.model = pipeline
+  members.tokenLimit = clamp.tokenLimit
+  members.measurementTokenizer = clamp.measurementTokenizer
 
   return { embedder, modelCalls }
 }
