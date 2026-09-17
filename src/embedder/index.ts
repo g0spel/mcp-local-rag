@@ -40,6 +40,19 @@ interface IndexedEmbeddingInput {
   tokenLength: number
 }
 
+interface TokenizerOptions {
+  padding?: boolean
+  truncation?: boolean
+  return_tensor?: boolean
+  max_length?: number
+}
+
+/** The tokenizer as this module calls it, and as the clamp proxy wraps it. */
+export type PipelineTokenizer = (
+  input: string[],
+  options: TokenizerOptions
+) => { input_ids?: unknown } | null | undefined
+
 /**
  * The transformers.js pipeline as this module calls it.
  *
@@ -54,14 +67,7 @@ interface EmbeddingPipeline {
     input: string[],
     options: unknown
   ): Promise<{ data?: unknown; dims?: unknown } | null | undefined>
-  tokenizer: (
-    input: string[],
-    options: {
-      padding: boolean
-      truncation: boolean
-      return_tensor: boolean
-    }
-  ) => { input_ids?: unknown } | null | undefined
+  tokenizer: PipelineTokenizer
 }
 
 /** True when the loaded pipeline exposes the call and tokenizer surface used here. */
@@ -69,6 +75,111 @@ function isEmbeddingPipeline(value: unknown): value is EmbeddingPipeline {
   return (
     typeof value === 'function' && 'tokenizer' in value && typeof value.tokenizer === 'function'
   )
+}
+
+// ============================================
+// Token Limit Clamp
+// ============================================
+
+/**
+ * Above this, a reported length is a sentinel rather than a real limit — it is
+ * how `Xenova/bge-large-zh-v1.5`'s `1e30` `model_max_length` is rejected.
+ */
+const MAX_PLAUSIBLE_TOKENS = 1e6
+
+/**
+ * Withheld from the position window on the window-only branch: with no
+ * trustworthy tokenizer limit, the RoBERTa family's padding-index offset makes
+ * the usable window `max_position_embeddings - 2`. A model reporting a usable
+ * tokenizer limit keeps exactly that limit, so no working model loses capacity.
+ */
+const RESERVED_POSITIONS = 2
+
+/** What the clamp leaves the caller: the effective cap, and the tokenizer it bypasses. */
+export interface TokenLimitClamp {
+  /** The effective token cap, or `null` for degraded mode (no cap, no clamp). */
+  tokenLimit: number | null
+  /** The pre-clamp tokenizer, for measuring true lengths. `null` when the shape is unrecognized. */
+  measurementTokenizer: PipelineTokenizer | null
+}
+
+/** A reported length usable as a limit, or `null` when it is absent or a sentinel. */
+function usableTokenLimit(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null
+  }
+  return value >= 1 && value <= MAX_PLAUSIBLE_TOKENS ? Math.floor(value) : null
+}
+
+function readPositionWindow(candidate: unknown): number | null {
+  const model = isObjectLike(candidate) ? candidate['model'] : undefined
+  const config = isObjectLike(model) ? model['config'] : undefined
+  return isObjectLike(config) ? usableTokenLimit(config['max_position_embeddings']) : null
+}
+
+function resolveEffectiveCap(
+  positionWindow: number | null,
+  tokenizerLimit: number | null
+): number | null {
+  if (positionWindow === null) {
+    return tokenizerLimit
+  }
+  if (tokenizerLimit !== null) {
+    return Math.min(positionWindow, tokenizerLimit)
+  }
+  // A window narrower than the reserve cannot yield a positive cap.
+  return Math.max(1, positionWindow - RESERVED_POSITIONS)
+}
+
+/**
+ * Bound the pipeline's tokenization length to the model's position window.
+ *
+ * The feature-extraction pipeline tokenizes with `{ padding: true, truncation:
+ * true }` and no `max_length`, which resolves to `model_max_length ?? Infinity`
+ * and then to the batch's longest sequence — so a model whose
+ * `tokenizer_config.json` omits a real limit sends more positions than it has
+ * position embeddings and onnxruntime fails in the position-embedding `Add`
+ * node (#202). Injecting `max_length` restores truncation.
+ *
+ * Order is load-bearing: the measurement tokenizer is captured before the proxy
+ * is installed, so measurement reports true lengths instead of clamped ones.
+ *
+ * A `Proxy` is used rather than assigning `model_max_length` (a getter with no
+ * setter) or mutating `_tokenizerConfig` (a private field); it depends only on
+ * documented tokenizer options and preserves every other tokenizer member.
+ *
+ * Installs the proxy as a side effect on `candidate`. An unrecognized shape or
+ * a model reporting no usable limit leaves `candidate` untouched (degraded
+ * mode): failing initialization instead would turn an upstream API change into
+ * a total outage.
+ */
+export function installTokenLimitClamp(candidate: unknown): TokenLimitClamp {
+  if (!isEmbeddingPipeline(candidate)) {
+    return { tokenLimit: null, measurementTokenizer: null }
+  }
+
+  const measurementTokenizer = candidate.tokenizer
+  const tokenizerLimit = usableTokenLimit(
+    isObjectLike(measurementTokenizer) ? measurementTokenizer['model_max_length'] : undefined
+  )
+  const tokenLimit = resolveEffectiveCap(readPositionWindow(candidate), tokenizerLimit)
+  if (tokenLimit === null) {
+    return { tokenLimit: null, measurementTokenizer }
+  }
+
+  candidate.tokenizer = new Proxy(measurementTokenizer, {
+    apply(target, thisArg, args: unknown[]) {
+      const [input, options] = args
+      const clamped = {
+        ...(isObjectLike(options) ? options : {}),
+        max_length: tokenLimit,
+        truncation: true,
+      }
+      return Reflect.apply(target, thisArg, [input, clamped])
+    },
+  })
+
+  return { tokenLimit, measurementTokenizer }
 }
 
 /** True when every entry exposes the numeric `length` the batching math reads. */
@@ -207,6 +318,7 @@ export class Embedder {
         // biome-ignore lint/nursery/noUnsafeTypeAssertion: un-allowlisted passthrough to a closed literal union
         device: device as DeviceType,
       })
+      installTokenLimitClamp(this.model)
       console.error(`Embedder: Model loaded successfully (device=${device})`)
     } catch (error) {
       const nativeError = toError(error)
