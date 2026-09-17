@@ -581,6 +581,21 @@ describe('Measured token containment', () => {
     }
   }
 
+  /**
+   * What #203's `chunk.text.length <= 400` assertion approximated: a stored
+   * chunk fits the model's window. Measured, so the check holds for any script
+   * and any tokenizer instead of for the character ratio of one script family.
+   */
+  function expectMeasuredWithinCap(
+    chunks: TextChunk[],
+    cap: number,
+    tokensOf: (text: string) => number = codeUnitTokens
+  ): void {
+    for (const chunk of chunks) {
+      expect(tokensOf(chunk.text)).toBeLessThanOrEqual(cap)
+    }
+  }
+
   it('measures and splits sentence units before the first embedBatch call', async () => {
     const text = 'abcdefghij'.repeat(12)
     const { embedder, log } = measuredEmbedder(30)
@@ -621,6 +636,7 @@ describe('Measured token containment', () => {
     }
     expect(chunks.map((chunk) => chunk.text).join(' ')).toBe(text)
     expect(chunks.map((chunk) => chunk.index)).toEqual(chunks.map((_, index) => index))
+    expectMeasuredWithinCap(chunks, 60)
     expectOrderedSpans(chunks, text)
   })
 
@@ -635,7 +651,23 @@ describe('Measured token containment', () => {
     for (const chunk of chunks) {
       expect(text.slice(chunk.sourceStart, chunk.sourceEnd)).toBe(chunk.text)
     }
+    expectMeasuredWithinCap(chunks, 60)
     expectOrderedSpans(chunks, text)
+  })
+
+  it('leaves text that measures inside the cap unsplit, whatever its script mix', async () => {
+    // #203 cut at 400 characters once 30% of them were CJK, so this fixture —
+    // 457 characters, 32% ideographs — was split there. Measured against the
+    // cap it fits, so it keeps its single-chunk boundary.
+    const text = `Release notes for the 位置窗口 guard: ${'密集文字的容纳以真实词元度量为准 containment keeps prose whole '.repeat(9)}`
+    const { embedder } = measuredEmbedder(512)
+
+    const chunks = await containmentChunker().chunkText(text, embedder)
+
+    expect(chunks).toHaveLength(1)
+    expect(chunks[0]?.text.length).toBeGreaterThan(400)
+    expect(text.slice(chunks[0]?.sourceStart, chunks[0]?.sourceEnd)).toBe(chunks[0]?.text)
+    expectMeasuredWithinCap(chunks, 512)
   })
 
   it('stores a grapheme that measures over the cap and keeps chunking the rest', async () => {
