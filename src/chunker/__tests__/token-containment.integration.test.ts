@@ -1,17 +1,9 @@
 // Measured containment against the real tokenizer (AC-008, AC-009).
 //
-// The rest of the containment criteria run on injected counters
-// (token-containment.test.ts, semantic-chunker.test.ts), which is cheaper and
-// stronger for structural properties. This case exists for the one thing a
-// counter cannot show: that the chunker's measurement is wired to the model
-// that will embed the text. It loads the cached default model and asserts the
-// overflow **before** containment as well as the containment after, so it fails
-// if that wiring is removed rather than passing on a fixture no tokenizer
-// considers long.
-//
-// No module factory is registered for `@huggingface/transformers`: mocking it
-// would leak across files (`isolate: false`, see lazy-initialization.test.ts)
-// and would lose the real-model coverage this case exists for.
+// An injected counter cannot show that the chunker's measurement is wired to
+// the model that will embed the text, so this case loads the cached default
+// model and asserts the overflow before containment as well as the containment
+// after. The structural properties are covered by counters elsewhere.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getTestDevice, testModelCacheDir } from '../../__tests__/test-device.js'
@@ -22,17 +14,21 @@ import { splitIntoSentenceUnits } from '../sentence-splitter.js'
 
 /**
  * A CJK paragraph with no sentence terminator, so the splitter keeps it as one
- * unit that overflows the cap on its own. Ideographs only: the default English
- * tokenizer splits them per character, while hiragana falls outside its
- * vocabulary and collapses to a single `[UNK]`, which would leave nothing to
- * contain. Repeating a 61-character phrase keeps every character well under
- * `isGarbageChunk`'s 80% repetition bound, so the fixture is stored content.
+ * oversized unit. Ideographs only: the default tokenizer splits them per
+ * character, while hiragana collapses to a single `[UNK]` and would leave
+ * nothing to contain. The repeated phrase stays under `isGarbageChunk`'s 80%
+ * repetition bound.
  */
 const DENSE_PHRASE =
   '检索增强生成系统在处理密集文字时会遇到位置窗口限制的问题因此需要以真实词元度量为依据的容纳策略而不是基于字符数量的粗略估计'
 const CJK_SENTENCE =
   '本项目的分块流程先按语义边界切分文本再度量真实词元数量然后仅对超出模型位置窗口的部分进行切分以保证内容完整可检索。'
 const CJK_DOCUMENT = `${DENSE_PHRASE.repeat(10)}${CJK_SENTENCE.repeat(3)}`
+
+/** One unit whose density changes inside it: ideographs cost about a token each here, Latin words a quarter of that. */
+const MIXED_DENSITY_DOCUMENT = `${DENSE_PHRASE.repeat(6)}${'retrieval augmented generation keeps the source text on the same machine '.repeat(
+  20
+)}${DENSE_PHRASE.repeat(6)}`
 
 const TRUNCATION_WARNING = /input exceeds the model token limit/
 
@@ -90,5 +86,23 @@ describe('Measured containment on the real tokenizer', () => {
       .map((call) => String(call[0]))
       .filter((message) => TRUNCATION_WARNING.test(message))
     expect(warnings).toEqual([])
+  }, 180000)
+
+  it('keeps chunks near the cap across a density change inside one unit', async () => {
+    const embedder = defaultModelEmbedder()
+    const cap = expectDefined(await embedder.getTokenLimit())
+
+    const chunks = await new SemanticChunker().chunkText(MIXED_DENSITY_DOCUMENT, embedder)
+
+    const lengths = await embedder.countTokens(chunks.map((chunk) => chunk.text))
+    for (const length of lengths) {
+      expect(length).toBeLessThanOrEqual(cap)
+    }
+    // Chunks stay proportional on both sides of the density change.
+    const [total] = await embedder.countTokens([MIXED_DENSITY_DOCUMENT])
+    expect(chunks.length).toBeLessThanOrEqual(Math.ceil(expectDefined(total) / cap) * 3)
+    expect(withoutWhitespace(chunks.map((chunk) => chunk.text).join(''))).toBe(
+      withoutWhitespace(MIXED_DENSITY_DOCUMENT)
+    )
   }, 180000)
 })

@@ -1,9 +1,7 @@
 // Truncation reporting and degraded-mode reporting (AC-005, AC-006, AC-007).
 //
 // Fake pipelines are handed to the instance the way `initialize()` does, so the
-// warnings are observed through `embed`/`embedBatch`/`getTokenLimit` without a model
-// download. Mocking `@huggingface/transformers` would leak across files
-// (`isolate: false`, see lazy-initialization.test.ts).
+// warnings are observed through the public methods without a model download.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { expectDefined, privateMembers } from '../../__tests__/test-doubles.js'

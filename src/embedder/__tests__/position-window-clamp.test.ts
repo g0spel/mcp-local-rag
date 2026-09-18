@@ -1,15 +1,9 @@
 // The #202 regression against the real tokenizer and onnxruntime (AC-001).
 //
-// The other embedder criteria run on injected fakes (token-clamp.test.ts,
-// measurement-contract.test.ts, truncation-warning.test.ts). This case exists
-// for what a double cannot show: that the clamp holds against the real
-// pipeline. The cached default model is loaded through `initialize()`, put back
-// into its pre-clamp state, and given `Xenova/bge-large-zh-v1.5`'s `1e30`
-// sentinel, which reproduces exactly the shape that crashes in #202.
-//
-// No module factory is registered for `@huggingface/transformers`: mocking it
-// would leak across files (`isolate: false`, see lazy-initialization.test.ts)
-// and would lose the real-model coverage this case exists for.
+// A double cannot show that the clamp holds against the real pipeline, so the
+// cached default model is loaded, put back into its pre-clamp state and given
+// `Xenova/bge-large-zh-v1.5`'s `1e30` sentinel, reproducing the shape that
+// crashes in #202. The other embedder criteria run on injected fakes.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getTestDevice, testModelCacheDir } from '../../__tests__/test-device.js'
@@ -27,7 +21,6 @@ const RESOLVED_CAP = 510
 const EMBEDDING_DIMENSIONS = 384
 const TRUNCATION_WARNING = /input exceeds the model token limit/
 
-/** The loaded pipeline as this case calls it: one inference call, one tokenizer. */
 interface LoadedPipeline {
   (input: string[], options: unknown): Promise<unknown>
   tokenizer: PipelineTokenizer

@@ -47,20 +47,13 @@ interface TokenizerOptions {
   max_length?: number
 }
 
-/** The tokenizer as this module calls it, and as the clamp proxy wraps it. */
 export interface PipelineTokenizer {
   (input: string[], options: TokenizerOptions): { input_ids?: unknown } | null | undefined
-  /**
-   * The tokenizer's reported length limit. Optional and `unknown` because a
-   * model may omit it or report the `1e30` sentinel, so
-   * {@link usableTokenLimit} stays the load-bearing check.
-   */
+  /** `unknown` because a model may omit it or report a sentinel; see {@link usableTokenLimit}. */
   model_max_length?: unknown
 }
 
-/** The model config surface the clamp reads for the position window. */
 interface PipelineModelConfig {
-  /** Optional and `unknown` for the same reason as `model_max_length`. */
   max_position_embeddings?: unknown
 }
 
@@ -78,11 +71,7 @@ interface EmbeddingPipeline {
     options: unknown
   ): Promise<{ data?: unknown; dims?: unknown } | null | undefined>
   tokenizer: PipelineTokenizer
-  /**
-   * The loaded model handle. Optional because the guard does not check it: a
-   * model reporting no position window takes the tokenizer-only branch of the
-   * limit table rather than being rejected.
-   */
+  /** Optional: a model reporting no position window takes the tokenizer-only branch. */
   model?: { config?: PipelineModelConfig }
 }
 
@@ -97,25 +86,20 @@ function isEmbeddingPipeline(value: unknown): value is EmbeddingPipeline {
 // Token Limit Clamp
 // ============================================
 
-/**
- * Above this, a reported length is a sentinel rather than a real limit — it is
- * how `Xenova/bge-large-zh-v1.5`'s `1e30` `model_max_length` is rejected.
- */
+/** Above this a reported length is a sentinel, such as `bge-large-zh-v1.5`'s `1e30`. */
 const MAX_PLAUSIBLE_TOKENS = 1e6
 
 /**
- * Withheld from the position window on the window-only branch: with no
- * trustworthy tokenizer limit, the RoBERTa family's padding-index offset makes
- * the usable window `max_position_embeddings - 2`. A model reporting a usable
- * tokenizer limit keeps exactly that limit, so no working model loses capacity.
+ * Withheld on the window-only branch, where no tokenizer limit is trustworthy:
+ * the RoBERTa family's padding-index offset makes the usable window
+ * `max_position_embeddings - 2`.
  */
 const RESERVED_POSITIONS = 2
 
-/** What the clamp leaves the caller: the effective cap, and the tokenizer it bypasses. */
 export interface TokenLimitClamp {
   /** The effective token cap, or `null` for degraded mode (no cap, no clamp). */
   tokenLimit: number | null
-  /** The pre-clamp tokenizer, for measuring true lengths. `null` when the shape is unrecognized. */
+  /** The pre-clamp tokenizer, for measuring true lengths. */
   measurementTokenizer: PipelineTokenizer | null
 }
 
@@ -146,26 +130,19 @@ function resolveEffectiveCap(
 }
 
 /**
- * Bound the pipeline's tokenization length to the model's position window.
+ * Bound the pipeline's tokenization length to the model's position window, by
+ * installing a proxy on `candidate`'s tokenizer.
  *
- * The feature-extraction pipeline tokenizes with `{ padding: true, truncation:
- * true }` and no `max_length`, which resolves to `model_max_length ?? Infinity`
- * and then to the batch's longest sequence — so a model whose
- * `tokenizer_config.json` omits a real limit sends more positions than it has
- * position embeddings and onnxruntime fails in the position-embedding `Add`
- * node (#202). Injecting `max_length` restores truncation.
+ * The pipeline tokenizes with no `max_length`, which resolves to
+ * `model_max_length ?? Infinity` and then to the batch's longest sequence, so a
+ * model whose `tokenizer_config.json` omits a real limit sends more positions
+ * than it has position embeddings and onnxruntime fails in the
+ * position-embedding `Add` node (#202).
  *
- * Order is load-bearing: the measurement tokenizer is captured before the proxy
- * is installed, so measurement reports true lengths instead of clamped ones.
- *
- * A `Proxy` is used rather than assigning `model_max_length` (a getter with no
- * setter) or mutating `_tokenizerConfig` (a private field); it depends only on
- * documented tokenizer options and preserves every other tokenizer member.
- *
- * Installs the proxy as a side effect on `candidate`. An unrecognized shape or
- * a model reporting no usable limit leaves `candidate` untouched (degraded
- * mode): failing initialization instead would turn an upstream API change into
- * a total outage.
+ * The measurement tokenizer is captured before the proxy, so measurement
+ * reports true lengths. A `Proxy` is used because `model_max_length` is a getter
+ * with no setter. An unrecognized shape, or no usable limit, leaves `candidate`
+ * untouched.
  */
 export function installTokenLimitClamp(candidate: unknown): TokenLimitClamp {
   if (!isEmbeddingPipeline(candidate)) {
@@ -282,10 +259,8 @@ export class Embedder {
   /** The pre-clamp tokenizer, so measurement never reports clamped lengths. */
   private measurementTokenizer: PipelineTokenizer | null = null
   /**
-   * One-shot flags, owned by the instance rather than the module: each state is
-   * a property of this embedder's model, and a second instance loading another
-   * model must be able to report it. They survive `dispose()` for the same
-   * reason the warnings exist — to be read once, not once per re-initialization.
+   * One-shot flags, per instance: each state belongs to this embedder's model.
+   * They survive `dispose()`; re-initialization is not new information.
    */
   private truncationWarned: boolean = false
   private degradedModeWarned: boolean = false
@@ -420,12 +395,10 @@ export class Embedder {
   }
 
   /**
-   * The effective token cap for this model, or `null` in degraded mode (no cap
-   * could be resolved, so callers have no limit to size inputs against).
+   * The effective token cap, or `null` when none could be resolved.
    *
-   * Asynchronous and self-initializing because the value exists only after the
-   * model loads and `ensureInitialized()` is private, so a caller that needs
-   * the cap before the first embedding has no other way to reach it.
+   * Self-initializing: the value exists only after the model loads, and a
+   * caller may need it before the first embedding.
    */
   async getTokenLimit(): Promise<number | null> {
     await this.ensureInitialized()
@@ -436,10 +409,9 @@ export class Embedder {
   }
 
   /**
-   * Report degraded mode once: no cap was resolved, so nothing bounds input
-   * length and no clamp protects inference. Warning here rather than in
-   * `initialize()` puts it at the point where the state becomes observable —
-   * every consumer of the cap, including `embedBatch`, reads it through here.
+   * Report once that no cap was resolved. Warning here rather than in
+   * `initialize()` covers every consumer, which all read the cap through
+   * {@link getTokenLimit}.
    */
   private warnDegradedMode(): void {
     if (this.degradedModeWarned) {
@@ -452,12 +424,9 @@ export class Embedder {
   }
 
   /**
-   * The lengths batch planning runs on: `min(trueLength, cap)`, which is the
-   * length the clamped pipeline actually feeds the model. Padding cost is
-   * therefore estimated on real work rather than on content the clamp discards.
-   *
-   * Emits this instance's one-shot truncation warning when a true length
-   * exceeds the cap, naming the cap and the longest observed length.
+   * The lengths batch planning runs on: `min(trueLength, cap)`, the length the
+   * clamped pipeline actually feeds the model. Warns once when a true length
+   * exceeds the cap.
    */
   private async planTokenLengths(texts: string[]): Promise<number[]> {
     const tokenLimit = await this.getTokenLimit()
@@ -480,19 +449,15 @@ export class Embedder {
   }
 
   /**
-   * The true token length of each text, in input order.
+   * The true token length of each text, in input order. Tokenization only, no
+   * inference.
    *
-   * Measured with `truncation: false` through the tokenizer captured before the
-   * clamp proxy was installed, so a returned length is the input's real length
-   * and a length above {@link getTokenLimit} means inference will truncate.
-   * Tokenization only — no model inference.
-   *
-   * Throws when no measurement tokenizer was captured (an unrecognized pipeline
-   * shape): a length measured through an unknown tokenizer surface cannot be
-   * trusted, and silently returning one would misreport truncation.
+   * Measured with `truncation: false` through the pre-clamp tokenizer, so a
+   * length above {@link getTokenLimit} means inference will truncate. Throws
+   * when no such tokenizer was captured, rather than returning a length
+   * measured through an unknown surface.
    */
   async countTokens(texts: string[]): Promise<number[]> {
-    // Nothing to measure → skip model init entirely, as embedBatch does.
     if (texts.length === 0) {
       return []
     }
@@ -515,9 +480,8 @@ export class Embedder {
   /**
    * Single-text embedding; the vector dimension depends on the model.
    *
-   * Delegates to {@link embedBatch} so the query path shares one clamp, one
-   * measurement, and one truncation warning with ingestion instead of taking a
-   * second, unguarded route into the pipeline.
+   * Delegates to {@link embedBatch} so this path shares its clamp, measurement
+   * and warning rather than reaching the pipeline unguarded.
    */
   async embed(text: string): Promise<number[]> {
     const embeddings = await this.embedBatch([text])
@@ -535,8 +499,6 @@ export class Embedder {
       return []
     }
 
-    // Empty text has no embedding to compute, and `embed()` delegates here, so
-    // this is the single owner of that rejection for every caller.
     if (texts.some((text) => text.length === 0)) {
       throw new EmbeddingError('Cannot generate embedding for empty text')
     }
@@ -555,8 +517,7 @@ export class Embedder {
         throw new EmbeddingError('Embedder pipeline is not callable')
       }
       const modelCall = this.model
-      // One measurement for the whole call, through the single `countTokens`
-      // implementation, so batch planning and truncation reporting cannot
+      // One measurement per call, so planning and truncation reporting cannot
       // disagree about a length.
       const plannedLengths = await this.planTokenLengths(texts)
       const embeddings: (number[] | undefined)[] = Array.from({ length: texts.length })

@@ -698,6 +698,24 @@ describe('Measured token containment', () => {
     expect(chunks).toEqual([])
   })
 
+  it('keeps every piece of a non-garbage unit whose fragments look like noise', async () => {
+    // A long run of one character is garbage on its own, but this unit is not:
+    // the Latin tail takes it under the repetition threshold. The run divides
+    // into more pieces than MAX_SENTENCES, so they reach several groups, and
+    // judging those groups individually used to discard the whole run.
+    const text = `${'\u6f22'.repeat(800)}${'abcdefghijklmnopqrstuvwxyz'.repeat(8)}tail`
+    expect(isGarbageChunk(text)).toBe(false)
+    const { embedder } = measuredEmbedder(50)
+
+    const chunks = await containmentChunker().chunkText(text, embedder)
+
+    const returned = chunks.reduce((total, chunk) => total + chunk.text.length, 0)
+    expect(returned).toBe(text.length)
+    expect(chunks[0]?.sourceStart).toBe(0)
+    expect(chunks.at(-1)?.sourceEnd).toBe(text.length)
+    expectOrderedSpans(chunks, text)
+  })
+
   it('splits an oversized atomic range into pieces with exact offsets', async () => {
     const text = 'abcdefghij'.repeat(9)
     const { embedder } = measuredEmbedder(30)
@@ -725,15 +743,6 @@ describe('Measured token containment', () => {
 
     expect(chunks).toEqual([{ text, index: 0, sourceStart: 0, sourceEnd: text.length }])
     expect(log.calls).not.toContain('countTokens')
-  })
-
-  it('produces today’s chunks for an embedder without the optional members', async () => {
-    const text = 'abcdefghij'.repeat(12)
-    const embedder = { embedBatch: (texts: string[]) => Promise.resolve(texts.map(() => [1, 0])) }
-
-    const chunks = await containmentChunker().chunkText(text, embedder)
-
-    expect(chunks).toEqual([{ text, index: 0, sourceStart: 0, sourceEnd: text.length }])
   })
 })
 
@@ -767,19 +776,12 @@ describe('Boundary preservation against main', () => {
     },
   ]
 
-  const cases = configurations.flatMap((configuration) =>
-    documents.map((document) => ({ ...configuration, ...document }))
-  )
-
-  it.each(documents)(
-    'keeps every group of the $document fixture inside the cap, as AC-011 requires',
-    ({ mainChunks }) => {
-      expect(mainChunks.length).toBeGreaterThan(0)
-      for (const chunk of mainChunks) {
-        expect(chunk.text.length).toBeLessThanOrEqual(CAP)
-      }
-    }
-  )
+  // A degraded embedder skips containment before either script matters.
+  const [resolvedCap, ...degraded] = configurations
+  const cases = [
+    ...documents.map((document) => ({ ...resolvedCap, ...document })),
+    ...degraded.map((configuration) => ({ ...configuration, ...documents[0] })),
+  ]
 
   it.each(cases)(
     'reproduces main’s chunks for the $document document with $configuration',

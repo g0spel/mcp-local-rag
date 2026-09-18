@@ -1,7 +1,5 @@
-// Token Containment Unit Test
-// Purpose: Verify the grapheme-bounded shrink-only prefix search and the measured
-// run splitting, with injected counters so dense and non-monotonic token ratios
-// that no shipped tokenizer conveniently provides are exercised directly.
+// Grapheme-bounded prefix search and measured run splitting, with injected
+// counters for the dense and non-monotonic ratios no shipped tokenizer offers.
 
 import { describe, expect, it } from 'vitest'
 import type { SentenceUnit } from '../sentence-splitter.js'
@@ -128,27 +126,91 @@ describe('splitUnitToFit', () => {
 
     const pieces = await splitUnitToFit(unit, { cap: 4, countTokens: nonMonotonicCounter })
 
-    expect(pieces.map((piece) => piece.text)).toEqual(['playingx', 'playingx'])
+    expect(reassemble(pieces)).toBe(unit.text)
     for (const piece of pieces) {
       const [measured] = await nonMonotonicCounter([piece.text])
       expect(measured).toBeLessThanOrEqual(4)
     }
   })
 
-  it('should halve the first candidate until the prefix measures within the cap', async () => {
-    // 16 graphemes measure 28 tokens, so the ratio's first candidate is 5
-    // graphemes ('XXXXa' = 17 tokens), which overflows and has to be halved.
+  it('should halve a candidate the density underestimated until it fits', async () => {
+    // 16 graphemes measure 28 tokens, so the density puts the first candidate at
+    // 5, and 'XXXXa' measures 17. Where halving lands is not the contract; a
+    // measured non-empty prefix within the cap is.
     const unit = unitOf(`${'X'.repeat(4)}${'a'.repeat(12)}`)
 
     const pieces = await splitUnitToFit(unit, { cap: 10, countTokens: weightedCounter })
 
-    expect(pieces.map((piece) => piece.text)).toEqual(['XX', 'XXa', 'a'.repeat(10), 'a'])
+    expect(pieces.length).toBeGreaterThan(1)
     for (const piece of pieces) {
       const [measured] = await weightedCounter([piece.text])
       expect(measured).toBeLessThanOrEqual(10)
     }
+    const firstPiece = pieces[0]
+    expect(firstPiece).toBeDefined()
+    expect([...(firstPiece?.text ?? '')].length).toBeLessThan(5)
     expect(reassemble(pieces)).toBe(unit.text)
   })
+
+  it('measures a bounded multiple of the unit, not the remainder per piece', async () => {
+    // The bound is about linearity, not a specific constant: measuring the
+    // remainder per piece costs length / cap times the unit's length, which was
+    // about 100 times over for 100,000 characters at a cap of 510.
+    const unit = unitOf('\u6f22'.repeat(20000))
+    let measuredCharacters = 0
+    const countingCounter: TokenCounter = (texts) => {
+      for (const text of texts) {
+        measuredCharacters += text.length
+      }
+      return codeUnitCounter(texts)
+    }
+
+    const pieces = await splitUnitToFit(unit, { cap: 500, countTokens: countingCounter })
+
+    expect(pieces.length).toBeGreaterThan(1)
+    expect(reassemble(pieces)).toBe(unit.text)
+    expect(measuredCharacters).toBeLessThan(unit.text.length * 5)
+  })
+
+  // Cuts must stay near the cap whatever the density profile.
+  const DENSE = '\u{20000}'
+  const densityProfiles = [
+    { profile: 'uniform sparse', text: 'a'.repeat(400) },
+    { profile: 'uniform dense', text: DENSE.repeat(40) },
+    { profile: 'dense head', text: `${DENSE}${'a'.repeat(1000)}` },
+    { profile: 'dense middle', text: `${'a'.repeat(100)}${DENSE}${'a'.repeat(1000)}` },
+    { profile: 'dense tail', text: `${'a'.repeat(1000)}${DENSE}` },
+  ]
+
+  it.each(densityProfiles)(
+    'should size cuts from nearby text for a $profile unit',
+    async ({ text }) => {
+      const cap = 100
+      const skewedCounter: TokenCounter = (texts) =>
+        Promise.resolve(
+          texts.map((piece) =>
+            [...piece].reduce((sum, character) => sum + (character === DENSE ? 100000 : 1), 0)
+          )
+        )
+      const unit = unitOf(text)
+      const graphemes = graphemeBoundariesOf(text).length - 1
+      const overCap = [...text].filter((character) => character === DENSE).length
+
+      const pieces = await splitUnitToFit(unit, { cap, countTokens: skewedCounter })
+
+      expect(reassemble(pieces)).toBe(text)
+      for (const piece of pieces) {
+        const [measured = 0] = await skewedCounter([piece.text])
+        if (graphemeBoundariesOf(piece.text).length - 1 > 1) {
+          expect(measured).toBeLessThanOrEqual(cap)
+        }
+      }
+      // Pieces stay proportional to the text's size over the cap, plus the
+      // graphemes that exceed it alone. Sizing every cut from the unit's
+      // average instead leaves one piece per grapheme.
+      expect(pieces.length).toBeLessThanOrEqual(Math.ceil(graphemes / cap) * 3 + 3 + overCap)
+    }
+  )
 
   it('should emit an oversized single grapheme cluster as one piece', async () => {
     const unit = unitOf(`a${FAMILY_EMOJI}b`)

@@ -1,11 +1,8 @@
 // Self-initializing measurement contract (AC-003, AC-004).
 //
-// The cached default model is used rather than an injected fake pipeline: what
-// these cases prove is that measurement bypasses the clamp proxy `initialize()`
-// installs, and that both members drive lazy initialization themselves. A fake
-// pipeline injected past `initialize()` can show neither. Mocking
-// `@huggingface/transformers` would leak across files (`isolate: false`, see
-// lazy-initialization.test.ts).
+// The cached default model, not a fake pipeline: a fake injected past
+// `initialize()` can show neither that measurement bypasses the installed clamp
+// proxy nor that both members drive initialization themselves.
 
 import { beforeEach, describe, expect, it } from 'vitest'
 import { getTestDevice, testModelCacheDir } from '../../__tests__/test-device.js'

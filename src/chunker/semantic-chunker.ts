@@ -31,9 +31,8 @@ export interface SemanticChunkerConfig {
 /**
  * Embedder interface for generating embeddings.
  *
- * `getTokenLimit` and `countTokens` are optional: an embedder that cannot
- * resolve its position window, and a test double that implements embedding
- * only, leave them out and the chunker then skips token containment entirely.
+ * `getTokenLimit` and `countTokens` are optional; without them the chunker
+ * skips token containment.
  */
 export interface EmbedderInterface {
   embedBatch(texts: string[]): Promise<number[][]>
@@ -106,19 +105,14 @@ export const DEFAULT_MIN_CHUNK_LENGTH = 50
 // Token Containment (stages A and C)
 // ============================================
 
-/**
- * Joins a group's units into the chunk text. Owned here because containment
- * measures the exact text that will be embedded.
- */
+/** Joins a group's units into the chunk text, which is also what containment measures. */
 function joinUnits(units: readonly SentenceUnit[]): string {
   return units.map((unit) => unit.text).join(' ')
 }
 
 /**
- * The embedder's token budget, or `null` when containment cannot run: the
- * embedder omits the optional members, or resolves no position-window limit
- * (degraded mode). In that state the chunker produces its pre-containment
- * output, with no containment guarantee.
+ * The embedder's token budget, or `null` when the optional members are absent
+ * or no limit could be resolved. Containment is then skipped entirely.
  */
 async function resolveContainmentBudget(
   embedder: EmbedderInterface
@@ -146,10 +140,11 @@ async function measureAll(texts: string[], budget: ContainmentBudget): Promise<n
 }
 
 /**
- * Stage A: reduce sentence units to pieces that measure at or below the cap,
- * before any embedding, so no sentence embedding is computed from input the
- * model would truncate. Pieces carry `containmentSplit` so the short tail a
- * split necessarily produces survives the minimum-length filter.
+ * Reduce sentence units to pieces within the cap, before embedding.
+ *
+ * Admission is judged here, on the whole unit, and recorded on its pieces: a
+ * fragment can be noise by itself — a run of one character reads as pure
+ * repetition — so judging pieces would drop text the parent was admitted with.
  */
 async function containUnits(
   units: SentenceUnit[],
@@ -161,20 +156,23 @@ async function containUnits(
   )
   const contained: SentenceUnit[] = []
   for (const [index, unit] of units.entries()) {
-    if ((measured[index] ?? 0) <= budget.cap) {
+    const unitTokens = measured[index] ?? 0
+    if (unitTokens <= budget.cap) {
       contained.push(unit)
       continue
     }
+    const admitted = !isGarbageChunk(unit.text)
     const pieces = await splitUnitToFit(unit, budget)
-    contained.push(...pieces.map((piece) => ({ ...piece, containmentSplit: true })))
+    contained.push(
+      ...pieces.map((piece) => (admitted ? { ...piece, containmentSplit: true } : piece))
+    )
   }
   return contained
 }
 
 /**
- * Stage C: reduce admitted groups to runs of whole units whose joined text
- * measures at or below the cap. A group that fits is returned untouched, so
- * content within the window keeps today's chunk boundaries.
+ * Reduce admitted groups to runs of whole units within the cap. A group that
+ * fits is returned untouched, so content inside the window keeps its boundaries.
  */
 async function containGroups(
   groups: SentenceUnit[][],
@@ -193,9 +191,9 @@ async function containGroups(
 }
 
 /**
- * Build the stored chunks. Offsets come from the first and last unit of each
- * piece, never from an index into the joined text: units are joined with a
- * single space while the source may hold newlines or repeated whitespace.
+ * Build the stored chunks. Offsets come from the first and last unit, never from
+ * an index into the joined text: the join uses a single space while the source
+ * may hold newlines or repeated whitespace.
  */
 function convertPiecesToChunks(pieces: SentenceUnit[][]): TextChunk[] {
   const chunks: TextChunk[] = []
@@ -263,18 +261,14 @@ export class SemanticChunker {
     }
 
     const budget = await resolveContainmentBudget(embedder)
-    // Stage A: a single sentence unit can exceed the model's position window on
-    // its own, before any grouping happens, so it is reduced before embedding.
     const units = budget ? await containUnits(sentenceUnits, budget) : sentenceUnits
 
     // Generate embeddings for all sentences
     const embeddings = await embedder.embedBatch(units.map((unit) => unit.text))
 
-    // Apply Max-Min algorithm to group sentences into chunks (stage B: no cap)
+    // Apply Max-Min algorithm to group sentences into chunks
     const sentenceGroups = this.groupSentences(units, embeddings)
 
-    // Admission is decided once per group, then stage C divides the survivors:
-    // every piece of an admitted group is stored without re-filtering.
     const admitted = sentenceGroups.filter((group) => this.admitsGroup(group))
     const pieces = budget ? await containGroups(admitted, budget) : admitted
 
@@ -282,17 +276,20 @@ export class SemanticChunker {
   }
 
   /**
-   * Whether a sentence group becomes stored chunks: garbage is always rejected,
-   * and the minimum-length filter is skipped for a group holding an atomic unit
-   * or a containment-split piece.
+   * Whether a sentence group becomes stored chunks. A group holding a
+   * containment piece is already admitted, judged before the split, so neither
+   * filter re-runs on a fragment of it. Otherwise garbage is rejected and the
+   * minimum length is waived for an atomic unit, which must stay whole.
    */
   private admitsGroup(group: SentenceUnit[]): boolean {
+    if (group.some((unit) => unit.containmentSplit)) {
+      return true
+    }
     const groupText = joinUnits(group)
     if (isGarbageChunk(groupText)) {
       return false
     }
-    const exemptFromMinLength = group.some((unit) => unit.atomic || unit.containmentSplit)
-    return exemptFromMinLength || groupText.length >= this.config.minChunkLength
+    return group.some((unit) => unit.atomic) || groupText.length >= this.config.minChunkLength
   }
 
   /**

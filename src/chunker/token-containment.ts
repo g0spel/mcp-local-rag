@@ -1,12 +1,10 @@
-// Measured token containment for chunker output
-// Purpose: reduce oversized sentence units and groups to pieces that measure at or
-// below the embedder's resolved token cap, using measurement rather than estimates
-// and cutting only at grapheme boundaries.
+// Reduces oversized sentence units and groups to pieces that measure at or below
+// the embedder's resolved token cap, cutting only at grapheme boundaries.
 
 /** Measures true, unclamped token lengths for each input text. */
 export type TokenCounter = (texts: string[]) => Promise<number[]>
 
-/** The unit shape containment reads: its text and the exact source span holding it. */
+/** The unit shape containment reads. `text` must be the exact slice `[sourceStart, sourceEnd)`. */
 export interface ContainmentUnit {
   text: string
   sourceStart: number
@@ -28,10 +26,9 @@ export interface RunContainmentBudget<T> extends ContainmentBudget {
 }
 
 /**
- * Cut candidates are grapheme boundaries because a JavaScript string index
- * addresses a UTF-16 code unit: an unconstrained cut can leave a lone surrogate
- * ('\u{20000}'.length === 2) or separate a base character from its combining
- * marks, which corrupts exactly the dense scripts containment exists for.
+ * Cuts land on grapheme boundaries: a string index addresses a UTF-16 code unit,
+ * so an unconstrained cut can leave a lone surrogate ('\u{20000}'.length === 2)
+ * or split a base character from its combining marks.
  */
 const graphemeSegmenter = new Intl.Segmenter('und', { granularity: 'grapheme' })
 
@@ -53,101 +50,56 @@ async function measure(text: string, budget: ContainmentBudget): Promise<number>
   return tokens
 }
 
-interface PrefixSearch {
-  /** Remainder being divided. */
-  text: string
-  /** Grapheme boundaries of `text`, terminated by `text.length`. */
-  boundaries: readonly number[]
-  /** Measured length of the whole remainder, already known to exceed the cap. */
-  measuredTokens: number
-}
-
 /**
- * Number of leading graphemes to emit as the next piece.
+ * Divide one sentence unit into pieces that each measure at or below the cap.
  *
- * The search shrinks only and never looks for the longest fitting prefix: token
- * count is not monotonic in prefix length (the prefixes of `playingx` measure
- * 3, 3, 4, 3, 4, 4, 3, 4 with this repo's default tokenizer), so a longest-prefix
- * search has no sound precondition. Halving reaches one grapheme in O(log n)
- * measurements, which makes termination structural instead of tokenizer-dependent.
- *
- * A single grapheme is returned without measuring: when a piece holds one
- * cluster there is no smaller valid cut, so a measurement above the cap is a
- * recorded fact about that piece rather than a condition to retry.
- */
-async function fittingPrefixGraphemes(
-  search: PrefixSearch,
-  budget: ContainmentBudget
-): Promise<number> {
-  const graphemeCount = search.boundaries.length - 1
-  let candidate = Math.max(1, Math.floor((graphemeCount * budget.cap) / search.measuredTokens))
-  while (candidate > 1) {
-    const end = search.boundaries[candidate] ?? search.text.length
-    if ((await measure(search.text.slice(0, end), budget)) <= budget.cap) {
-      return candidate
-    }
-    candidate = Math.floor(candidate / 2)
-  }
-  return 1
-}
-
-/**
- * Stage A: divide one sentence unit into pieces that each measure at or below the
- * cap, in source coordinates.
- *
- * Offsets are `unit.sourceStart + pieceStart`, which holds because a unit's stored
- * text is exactly its source slice. Every other unit property is carried onto each
- * piece, so an oversized atomic unit yields atomic pieces.
- *
- * The one exception to the cap is a piece holding a single grapheme cluster that
- * still measures above it: it is emitted as-is, the embedder's clamp truncates it,
- * and its warning is the observable signal.
+ * Halving, not a search for the longest fitting prefix: token count is not
+ * monotonic in prefix length — the prefixes of `playingx` measure 3, 3, 4, 3,
+ * 4, 4, 3, 4 here. A single grapheme over the cap is emitted anyway, leaving
+ * the embedder's clamp to truncate it.
  */
 export async function splitUnitToFit<T extends ContainmentUnit>(
   unit: T,
   budget: ContainmentBudget
 ): Promise<T[]> {
   const boundaries = graphemeBoundaries(unit.text)
+  const graphemeCount = boundaries.length - 1
   const pieces: T[] = []
-  let startBoundary = 0
+  let start = 0
+  let nextCandidate = budget.cap
 
-  while (startBoundary < boundaries.length - 1) {
-    const pieceStart = boundaries[startBoundary] ?? 0
-    const remainder = unit.text.slice(pieceStart)
-    const measuredTokens = await measure(remainder, budget)
-    const takenGraphemes =
-      measuredTokens <= budget.cap
-        ? boundaries.length - 1 - startBoundary
-        : await fittingPrefixGraphemes(
-            {
-              text: remainder,
-              boundaries: boundaries.slice(startBoundary).map((offset) => offset - pieceStart),
-              measuredTokens,
-            },
-            budget
-          )
-    const endBoundary = startBoundary + takenGraphemes
-    const pieceEnd = boundaries[endBoundary] ?? unit.text.length
+  while (start < graphemeCount) {
+    const pieceStart = boundaries[start] ?? 0
+    const measureCandidate = (size: number): Promise<number> =>
+      measure(unit.text.slice(pieceStart, boundaries[start + size] ?? unit.text.length), budget)
+
+    let candidate = Math.min(graphemeCount - start, nextCandidate)
+    let tokens = await measureCandidate(candidate)
+    while (tokens > budget.cap && candidate > 1) {
+      candidate = Math.floor(candidate / 2)
+      tokens = await measureCandidate(candidate)
+    }
+    nextCandidate = candidate * 2
+    const pieceEnd = boundaries[start + candidate] ?? unit.text.length
     pieces.push({
       ...unit,
       text: unit.text.slice(pieceStart, pieceEnd),
       sourceStart: unit.sourceStart + pieceStart,
       sourceEnd: unit.sourceStart + pieceEnd,
     })
-    startBoundary = endBoundary
+    start += candidate
   }
 
   return pieces
 }
 
 /**
- * Stage C: divide a group into consecutive runs of whole units whose joined text
- * measures at or below the cap.
+ * Divide a group into consecutive runs of whole units whose joined text measures
+ * at or below the cap.
  *
- * A one-unit run is final and is returned as measured, even above the cap, because
- * stage A already reduced that unit as far as a valid Unicode cut allows; this
- * function never re-enters unit-internal splitting. Each division strictly reduces
- * the number of units per run, so progress does not depend on how dense the text is.
+ * A one-unit run is final even above the cap: {@link splitUnitToFit} already
+ * reduced that unit as far as a valid cut allows. Each division strictly reduces
+ * the units per run, so progress does not depend on the text.
  */
 export async function splitUnitsIntoFittingRuns<T>(
   units: readonly T[],

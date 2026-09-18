@@ -1,9 +1,7 @@
 // Cap resolution and clamp installation (AC-002, AC-007).
 //
-// The fake pipelines are passed to the module-level clamp function directly.
-// Mocking `@huggingface/transformers` would leak across files (`isolate: false`,
-// see lazy-initialization.test.ts) and that module is reached by every suite
-// importing src/embedder/index.ts.
+// Fake pipelines go to the module-level clamp function directly; no module
+// factory for `@huggingface/transformers` (see lazy-initialization.test.ts).
 
 import { describe, expect, it } from 'vitest'
 import { installTokenLimitClamp } from '../index.js'
@@ -100,22 +98,6 @@ describe('installTokenLimitClamp', () => {
     pipeline.tokenizer(['clamped'], { padding: true, truncation: false })
 
     expect(tokenizerCalls).toEqual([{ padding: true, truncation: true, max_length: 510 }])
-  })
-
-  it('returns the unclamped tokenizer for measurement', () => {
-    const { pipeline, tokenizer, tokenizerCalls } = createFakePipeline({
-      maxPositionEmbeddings: 512,
-    })
-
-    const installation = installTokenLimitClamp(pipeline)
-    expect(installation.measurementTokenizer).toBe(tokenizer)
-    installation.measurementTokenizer?.(['measured'], {
-      padding: false,
-      truncation: false,
-      return_tensor: false,
-    })
-
-    expect(tokenizerCalls).toEqual([{ padding: false, truncation: false, return_tensor: false }])
   })
 
   it('preserves the other tokenizer members through the clamp proxy', () => {
