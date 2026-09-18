@@ -336,7 +336,7 @@ El servidor MCP lee variables de entorno. La CLI acepta las mismas variables y l
 | `HF_ENDPOINT` | No disponible | `https://huggingface.co` | Dirección de descarga de modelos de Hugging Face; usa la URL de un servidor espejo si las descargas directas están bloqueadas |
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Modelo de embeddings de Hugging Face |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100 MB) | Tamaño máximo del archivo en bytes |
-| `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Longitud mínima de un segmento en caracteres (1–10000) |
+| `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Longitud mínima de un segmento normal en caracteres (1–10000); un fragmento resultante de dividir contenido para respetar el límite de tokens del modelo puede ser más corto |
 | `RAG_DEVICE` | No disponible | `cpu` | Dispositivo de ejecución de ONNX Runtime |
 | `RAG_DTYPE` | No disponible | `fp32` | Tipo de datos de los embeddings que recibe el modelo seleccionado |
 
