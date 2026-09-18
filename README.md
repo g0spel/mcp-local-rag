@@ -414,7 +414,7 @@ variables and flags; image storage on CLI ingestion and sync is enabled only wit
 | `HF_ENDPOINT` | N/A | `https://huggingface.co` | Hugging Face model download endpoint; use a mirror URL when direct downloads are blocked |
 | `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Hugging Face embedding model |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100MB) | Maximum file size in bytes |
-| `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum chunk length in characters (1–10000) |
+| `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Minimum length in characters (1–10000) for ordinary chunks; a fragment of content split to fit the model's token limit can be shorter |
 | `STORE_IMAGES` | N/A | `false` | MCP server only: store supported PDF/DOCX images and return them with matched chunks. CLI uses `--images`. |
 | `RAG_DEVICE` | N/A | `cpu` | ONNX Runtime execution device |
 | `RAG_DTYPE` | N/A | `fp32` | Embedding dtype passed to the selected model |

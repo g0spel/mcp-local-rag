@@ -32,6 +32,13 @@ export interface SentenceUnit {
   atomic: boolean
   sourceStart: number
   sourceEnd: number
+  /**
+   * Set by token containment on pieces of a unit it admitted before splitting,
+   * so the group holding a piece is stored without the filters re-running on a
+   * fragment. Distinct from `atomic`, which means a range must stay whole; the
+   * splitter never sets this flag.
+   */
+  containmentSplit?: boolean
 }
 
 interface MappedText {
@@ -273,15 +280,18 @@ export function splitIntoSentenceUnits(
 
   for (const range of atomicRanges) {
     units.push(...splitOrdinaryRange(text, cursor, range.start))
-    const atomicText = text.slice(range.start, range.end).trim()
-    if (!atomicText) {
+    // Offsets advance with the trim so the text stays the exact source slice
+    // that source-position arithmetic relies on.
+    const atomicRange = trimmedRange(text, range.start, range.end)
+    if (!atomicRange) {
       throw new Error(`Invalid atomic range [${range.start}, ${range.end}): empty text`)
     }
+    const [atomicStart, atomicEnd] = atomicRange
     units.push({
-      text: atomicText,
+      text: text.slice(atomicStart, atomicEnd),
       atomic: true,
-      sourceStart: range.start,
-      sourceEnd: range.end,
+      sourceStart: atomicStart,
+      sourceEnd: atomicEnd,
     })
     cursor = range.end
   }

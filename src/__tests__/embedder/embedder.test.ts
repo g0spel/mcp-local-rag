@@ -47,7 +47,7 @@ describe('Embedder', () => {
       await expect(embedder.embedBatch([])).resolves.toEqual([])
     })
 
-    it('early-rethrows EmbeddingError from embed() instead of re-wrapping with batch guidance', async () => {
+    it('rejects an empty batch element without re-wrapping it with batch guidance', async () => {
       const embedder = makeEmbedder()
 
       const err = asError(await embedder.embedBatch(['valid', '']).catch((e) => e))

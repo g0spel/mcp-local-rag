@@ -3,6 +3,11 @@
 
 import type { AtomicTextRange, TextChunk } from './index.js'
 import { type SentenceUnit, splitIntoSentenceUnits } from './sentence-splitter.js'
+import {
+  type ContainmentBudget,
+  splitUnitsIntoFittingRuns,
+  splitUnitToFit,
+} from './token-containment.js'
 
 // ============================================
 // Type Definitions
@@ -24,10 +29,17 @@ export interface SemanticChunkerConfig {
 }
 
 /**
- * Embedder interface for generating embeddings
+ * Embedder interface for generating embeddings.
+ *
+ * `getTokenLimit` and `countTokens` are optional; without them the chunker
+ * skips token containment.
  */
 export interface EmbedderInterface {
   embedBatch(texts: string[]): Promise<number[][]>
+  /** Resolved token cap, or `null` when no limit could be resolved. */
+  getTokenLimit?(): Promise<number | null>
+  /** True, unclamped token lengths of each text. */
+  countTokens?(texts: string[]): Promise<number[]>
 }
 
 // ============================================
@@ -89,130 +101,116 @@ export function isGarbageChunk(text: string): boolean {
 /** Default minimum chunk length in characters */
 export const DEFAULT_MIN_CHUNK_LENGTH = 50
 
-/**
- * CJK scripts (Hiragana, Katakana, CJK ideographs + ext-A, Hangul).
- * CJK text runs close to one token per character, so a sentence unit or
- * semantic group sized for Latin content (500-1000 chars) can exceed a
- * BERT-family embedding model's 512-position window and crash ONNX
- * inference with a broadcast error. See `splitOversizedCjkUnits` and
- * `appendCjkSplitChunks`.
- */
-const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/
+// ============================================
+// Token Containment (stages A and C)
+// ============================================
 
-/**
- * Fraction of CJK characters at or above which text is treated as CJK for the
- * length guards. A ratio gate (rather than "contains any") keeps Latin prose
- * carrying an incidental CJK product name from being re-split.
- */
-const CJK_RATIO_THRESHOLD = 0.3
-
-/** Whether enough of `text` is CJK to apply the chunk-length guards. */
-function isCjkText(text: string): boolean {
-  let total = 0
-  let cjk = 0
-  for (const ch of text) {
-    total++
-    if (CJK_RE.test(ch)) {
-      cjk++
-    }
-  }
-  return total > 0 && cjk / total >= CJK_RATIO_THRESHOLD
+/** Joins a group's units into the chunk text, which is also what containment measures. */
+function joinUnits(units: readonly SentenceUnit[]): string {
+  return units.map((unit) => unit.text).join(' ')
 }
 
 /**
- * Max characters per CJK sentence unit / chunk. Kept under the 512-position
- * window common to BERT-family embedding models, with headroom for tokens
- * that expand past 1:1 (sub-word splits, punctuation).
+ * The embedder's token budget, or `null` when the optional members are absent
+ * or no limit could be resolved. Containment is then skipped entirely.
  */
-const MAX_CJK_CHUNK_CHARS = 400
-
-/**
- * Split oversized CJK sentence units (table rows, unpunctuated prose, code
- * spans) before sentence-level embedding. Non-CJK units pass through
- * unchanged so Latin behavior is unaffected.
- */
-function splitOversizedCjkUnits(units: SentenceUnit[]): SentenceUnit[] {
-  const safe: SentenceUnit[] = []
-  for (const unit of units) {
-    if (isCjkText(unit.text) && unit.text.length > MAX_CJK_CHUNK_CHARS) {
-      for (let s = 0; s < unit.text.length; s += MAX_CJK_CHUNK_CHARS) {
-        safe.push({
-          ...unit,
-          text: unit.text.slice(s, s + MAX_CJK_CHUNK_CHARS),
-          sourceStart: unit.sourceStart + s,
-          sourceEnd: Math.min(unit.sourceEnd, unit.sourceStart + s + MAX_CJK_CHUNK_CHARS),
-        })
-      }
-    } else {
-      safe.push(unit)
-    }
+async function resolveContainmentBudget(
+  embedder: EmbedderInterface
+): Promise<ContainmentBudget | null> {
+  const { getTokenLimit, countTokens } = embedder
+  if (!getTokenLimit || !countTokens) {
+    return null
   }
-  return safe
+  const cap = await getTokenLimit.call(embedder)
+  if (cap === null) {
+    return null
+  }
+  return { cap, countTokens: (texts) => countTokens.call(embedder, texts) }
+}
+
+/** One measurement pass over `texts`, rejecting a counter that drops inputs. */
+async function measureAll(texts: string[], budget: ContainmentBudget): Promise<number[]> {
+  const measured = await budget.countTokens(texts)
+  if (measured.length !== texts.length) {
+    throw new Error(
+      `Token counter returned ${measured.length} measurements for ${texts.length} texts`
+    )
+  }
+  return measured
 }
 
 /**
- * Append chunks for an oversized CJK semantic group: re-split at sentence
- * boundaries first, hard-split a single oversized sentence unit. Returns the
- * next chunk index. Non-CJK groups never reach this path.
+ * Reduce sentence units to pieces within the cap, before embedding.
+ *
+ * Admission is judged here, on the whole unit, and recorded on its pieces: a
+ * fragment can be noise by itself — a run of one character reads as pure
+ * repetition — so judging pieces would drop text the parent was admitted with.
  */
-function appendCjkSplitChunks(
-  group: SentenceUnit[],
-  chunks: TextChunk[],
-  startIndex: number
-): number {
-  let chunkIndex = startIndex
-  let sub: SentenceUnit[] = []
-  let subLen = 0
-  const flushSub = (): void => {
-    if (sub.length === 0) {
-      return
-    }
-    const first = sub[0]
-    const last = sub[sub.length - 1]
-    if (!first || !last) {
-      return
-    }
-    const text = sub.map((unit) => unit.text).join(' ')
-    if (!isGarbageChunk(text)) {
-      chunks.push({
-        text,
-        index: chunkIndex++,
-        sourceStart: first.sourceStart,
-        sourceEnd: last.sourceEnd,
-      })
-    }
-    sub = []
-    subLen = 0
-  }
-  // An oversized atomic unit (table row, code span) cannot be embedded whole
-  // within the position window, so splitting it is the only option; the pieces
-  // keep the atomic flag. Atomic units are stored trimmed, so offsets into a
-  // split piece can drift by the trimmed leading whitespace (bounded, and
-  // only affects the oversized-recovery path).
-  for (const unit of group) {
-    if (unit.text.length > MAX_CJK_CHUNK_CHARS) {
-      flushSub()
-      for (let s = 0; s < unit.text.length; s += MAX_CJK_CHUNK_CHARS) {
-        const piece = unit.text.slice(s, s + MAX_CJK_CHUNK_CHARS)
-        if (!isGarbageChunk(piece)) {
-          chunks.push({
-            text: piece,
-            index: chunkIndex++,
-            sourceStart: unit.sourceStart + s,
-            sourceEnd: Math.min(unit.sourceEnd, unit.sourceStart + s + MAX_CJK_CHUNK_CHARS),
-          })
-        }
-      }
+async function containUnits(
+  units: SentenceUnit[],
+  budget: ContainmentBudget
+): Promise<SentenceUnit[]> {
+  const measured = await measureAll(
+    units.map((unit) => unit.text),
+    budget
+  )
+  const contained: SentenceUnit[] = []
+  for (const [index, unit] of units.entries()) {
+    const unitTokens = measured[index] ?? 0
+    if (unitTokens <= budget.cap) {
+      contained.push(unit)
       continue
     }
-    if (subLen + unit.text.length > MAX_CJK_CHUNK_CHARS && sub.length > 0) {
-      flushSub()
-    }
-    sub.push(unit)
-    subLen += unit.text.length + 1
+    const admitted = !isGarbageChunk(unit.text)
+    const pieces = await splitUnitToFit(unit, budget)
+    contained.push(
+      ...pieces.map((piece) => (admitted ? { ...piece, containmentSplit: true } : piece))
+    )
   }
-  flushSub()
-  return chunkIndex
+  return contained
+}
+
+/**
+ * Reduce admitted groups to runs of whole units within the cap. A group that
+ * fits is returned untouched, so content inside the window keeps its boundaries.
+ */
+async function containGroups(
+  groups: SentenceUnit[][],
+  budget: ContainmentBudget
+): Promise<SentenceUnit[][]> {
+  const measured = await measureAll(groups.map(joinUnits), budget)
+  const contained: SentenceUnit[][] = []
+  for (const [index, group] of groups.entries()) {
+    if ((measured[index] ?? 0) <= budget.cap) {
+      contained.push(group)
+      continue
+    }
+    contained.push(...(await splitUnitsIntoFittingRuns(group, { ...budget, joinUnits })))
+  }
+  return contained
+}
+
+/**
+ * Build the stored chunks. Offsets come from the first and last unit, never from
+ * an index into the joined text: the join uses a single space while the source
+ * may hold newlines or repeated whitespace.
+ */
+function convertPiecesToChunks(pieces: SentenceUnit[][]): TextChunk[] {
+  const chunks: TextChunk[] = []
+  for (const piece of pieces) {
+    const firstUnit = piece[0]
+    const lastUnit = piece[piece.length - 1]
+    if (!firstUnit || !lastUnit) {
+      continue
+    }
+    chunks.push({
+      text: joinUnits(piece),
+      index: chunks.length,
+      sourceStart: firstUnit.sourceStart,
+      sourceEnd: lastUnit.sourceEnd,
+    })
+  }
+  return chunks
 }
 
 const DEFAULT_SEMANTIC_CHUNKER_CONFIG: SemanticChunkerConfig = {
@@ -257,66 +255,41 @@ export class SemanticChunker {
     }
 
     // Split into sentences
-    let sentenceUnits = splitIntoSentenceUnits(text, atomicRanges)
+    const sentenceUnits = splitIntoSentenceUnits(text, atomicRanges)
     if (sentenceUnits.length === 0) {
       return []
     }
 
-    // CJK safety: a single sentence unit can exceed the embedding model's
-    // position window on its own, before any grouping happens
-    sentenceUnits = splitOversizedCjkUnits(sentenceUnits)
+    const budget = await resolveContainmentBudget(embedder)
+    const units = budget ? await containUnits(sentenceUnits, budget) : sentenceUnits
 
     // Generate embeddings for all sentences
-    const embeddings = await embedder.embedBatch(sentenceUnits.map((unit) => unit.text))
+    const embeddings = await embedder.embedBatch(units.map((unit) => unit.text))
 
     // Apply Max-Min algorithm to group sentences into chunks
-    const sentenceGroups = this.groupSentences(sentenceUnits, embeddings)
+    const sentenceGroups = this.groupSentences(units, embeddings)
 
-    return this.convertGroupsToChunks(sentenceGroups)
+    const admitted = sentenceGroups.filter((group) => this.admitsGroup(group))
+    const pieces = budget ? await containGroups(admitted, budget) : admitted
+
+    return convertPiecesToChunks(pieces)
   }
 
   /**
-   * Convert sentence groups into TextChunks, applying the CJK length guard:
-   * semantic groups carry no length cap, and CJK text runs ~1 token per
-   * character, so an oversized group can exceed the embedding model's
-   * position window. Oversized CJK groups are re-split at sentence
-   * boundaries; everything else keeps the single-chunk behavior.
+   * Whether a sentence group becomes stored chunks. A group holding a
+   * containment piece is already admitted, judged before the split, so neither
+   * filter re-runs on a fragment of it. Otherwise garbage is rejected and the
+   * minimum length is waived for an atomic unit, which must stay whole.
    */
-  private convertGroupsToChunks(sentenceGroups: SentenceUnit[][]): TextChunk[] {
-    const chunks: TextChunk[] = []
-    let chunkIndex = 0
-
-    for (const group of sentenceGroups) {
-      const chunkText = group.map((unit) => unit.text).join(' ')
-      const containsAtomicUnit = group.some((unit) => unit.atomic)
-
-      // Filter out chunks that are too short or garbage
-      if (
-        (containsAtomicUnit || chunkText.length >= this.config.minChunkLength) &&
-        !isGarbageChunk(chunkText)
-      ) {
-        const firstUnit = group[0]
-        const lastUnit = group[group.length - 1]
-        if (!firstUnit || !lastUnit) {
-          continue
-        }
-
-        if (isCjkText(chunkText) && chunkText.length > MAX_CJK_CHUNK_CHARS) {
-          chunkIndex = appendCjkSplitChunks(group, chunks, chunkIndex)
-          continue
-        }
-
-        chunks.push({
-          text: chunkText,
-          index: chunkIndex,
-          sourceStart: firstUnit.sourceStart,
-          sourceEnd: lastUnit.sourceEnd,
-        })
-        chunkIndex++
-      }
+  private admitsGroup(group: SentenceUnit[]): boolean {
+    if (group.some((unit) => unit.containmentSplit)) {
+      return true
     }
-
-    return chunks
+    const groupText = joinUnits(group)
+    if (isGarbageChunk(groupText)) {
+      return false
+    }
+    return group.some((unit) => unit.atomic) || groupText.length >= this.config.minChunkLength
   }
 
   /**

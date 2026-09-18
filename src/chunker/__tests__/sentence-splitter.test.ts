@@ -300,6 +300,43 @@ describe('splitIntoSentenceUnits', () => {
     expect(codeUnit?.sourceEnd).toBe(text.indexOf(fenced) + fenced.length)
   })
 
+  it('advances atomic offsets past surrounding whitespace so the unit text is its source slice', () => {
+    const row = 'Field: 42\nDetail: 7'
+    const text = `Before.\n\n  ${row}  \n\nAfter.`
+    const rangeStart = text.indexOf(`  ${row}`)
+    const rangeEnd = rangeStart + `  ${row}  `.length
+    const units = splitIntoSentenceUnits(text, [{ start: rangeStart, end: rangeEnd }])
+
+    expect(units.find((unit) => unit.atomic)).toEqual({
+      text: row,
+      atomic: true,
+      sourceStart: rangeStart + 2,
+      sourceEnd: rangeStart + 2 + row.length,
+    })
+    for (const unit of units) {
+      expect(text.slice(unit.sourceStart, unit.sourceEnd)).toBe(unit.text)
+    }
+  })
+
+  it('keeps the source-slice invariant for atomic units holding inline code and fenced blocks', () => {
+    const fenced = '```ts\nconst value = "same. same."\n```'
+    const row = `Use \`x. y\` here.\n${fenced}`
+    const text = `Intro.\n\n \n${row} \n\n\nOutro.`
+    const rangeStart = text.indexOf(` \n${row}`)
+    const rangeEnd = rangeStart + ` \n${row} \n`.length
+    const units = splitIntoSentenceUnits(text, [{ start: rangeStart, end: rangeEnd }])
+
+    expect(units.find((unit) => unit.atomic)).toEqual({
+      text: row,
+      atomic: true,
+      sourceStart: text.indexOf(row),
+      sourceEnd: text.indexOf(row) + row.length,
+    })
+    for (const unit of units) {
+      expect(text.slice(unit.sourceStart, unit.sourceEnd)).toBe(unit.text)
+    }
+  })
+
   it.each([
     ['empty', [{ start: 1, end: 1 }]],
     ['negative', [{ start: -1, end: 2 }]],
