@@ -175,6 +175,7 @@ jobs:
         install_runtime: true
         install_swiftshader: ${{ runner.os == 'Windows' }}
         install_lavapipe: ${{ runner.os == 'Linux' }}
+        github_token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Install Vulkan Dependencies (Ubuntu)
       if: runner.os == 'Linux'
