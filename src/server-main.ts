@@ -1,5 +1,5 @@
 // MCP Server entry point
-import { resolveDevice, resolveDtype } from './cli/options.js'
+import { resolveDevice, resolveDtype, resolveEmbeddingServerUrl } from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import { BaseDirsConfigError, parseBaseDirsEnv, resolveBaseDirs } from './utils/base-dirs.js'
 import { DEFAULT_MAX_FILE_SIZE, MAX_CHUNK_MIN_LENGTH, MAX_FILE_SIZE_LIMIT } from './utils/limits.js'
@@ -261,6 +261,7 @@ export async function resolveServerConfig(
     rawBaseDirs: roots.rawBaseDirs,
     maxFileSize: maxFileSize.value,
     device: resolveDevice(env['RAG_DEVICE']),
+
     storeImages: false,
   }
 
@@ -271,6 +272,10 @@ export async function resolveServerConfig(
   const dtype = resolveDtype(env['RAG_DTYPE'])
   if (dtype !== undefined) {
     config.dtype = dtype
+  }
+  const embeddingServerUrl = resolveEmbeddingServerUrl(env['RAG_EMBEDDING_SERVER_URL'])
+  if (embeddingServerUrl !== undefined) {
+    config.embeddingServerUrl = embeddingServerUrl
   }
 
   if (configWarnings.length > 0) {

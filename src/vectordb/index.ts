@@ -451,7 +451,10 @@ export class VectorStore {
       // Return top results after all filtering and boosting
       return results.slice(0, limit)
     } catch (error) {
-      throw new DatabaseError('Failed to search vectors', { cause: toError(error) })
+      throw new DatabaseError(
+        `Failed to search vectors: ${toError(error).message}`,
+        { cause: toError(error) }
+      )
     }
   }
 
