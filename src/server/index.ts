@@ -1090,7 +1090,7 @@ export class RAGServer {
   // ============================================
 
   private lastAutoSyncFingerprint: string | null = null
-  private autoSyncQueued = false
+  private autoSyncQueued: boolean = false
   private lastAutoSyncAttempt = 0
 
   private async computeDocsFingerprint(): Promise<string | null> {
@@ -1128,7 +1128,7 @@ export class RAGServer {
     }
     this.lastAutoSyncAttempt = now
     this.autoSyncQueued = true
-    void (async () => {
+    const scan = async (): Promise<void> => {
       try {
         const fingerprint = await this.computeDocsFingerprint()
         if (fingerprint === null) {
@@ -1141,13 +1141,14 @@ export class RAGServer {
           return
         }
         console.error('Auto-sync: document changes detected, running background sync')
-        await this.handleSyncStart({} as SyncStartInput)
+        await this.handleSyncStart({})
       } catch (error: unknown) {
         console.error('Auto-sync scan failed:', error instanceof Error ? error.message : error)
       } finally {
         this.autoSyncQueued = false
       }
-    })()
+    }
+    scan().catch(() => {})
   }
 
   async handleSyncStart(input: SyncStartInput): Promise<{ content: RagTextContentBlock[] }> {
@@ -1164,6 +1165,7 @@ export class RAGServer {
       warnings: [],
       error: null,
     }
+    this.writeSyncStateFile()
 
     this.runSyncJob(jobId, input.path)
       .catch((error: unknown) => {
@@ -1204,6 +1206,22 @@ export class RAGServer {
       return
     }
     this.syncJob = { ...this.syncJob, ...patch }
+    this.writeSyncStateFile()
+  }
+
+  /**
+   * Persist the latest sync job state beside the DB for out-of-band observers
+   * (e.g. a desktop status bar): sync job state lives only in this process's
+   * memory, so anything outside the MCP protocol cannot see it. Fire-and-forget
+   * write: a status file failure must never affect the sync itself.
+   */
+  private writeSyncStateFile(): void {
+    if (this.syncJob === null) {
+      return
+    }
+    const file = resolve(this.dbPath, '..', 'sync-state.json')
+    const payload = JSON.stringify({ ...this.syncJob, updatedAt: new Date().toISOString() })
+    writeFile(file, payload).catch(() => {})
   }
 
   /**
