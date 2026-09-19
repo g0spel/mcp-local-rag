@@ -130,6 +130,11 @@ export function classifyScanEntry(
   if (isUnderExcludedPrefix(fullPath, excludePaths, platform)) {
     return 'excluded'
   }
+  // Default hygiene: dependency trees and VCS metadata never belong in a
+  // document index (fork patch — upstream leaves this to callers).
+  if (/(^|\/)(node_modules|\.git)(\\|\/|$)/.test(fullPath)) {
+    return 'excluded'
+  }
   if (entry.isDirectory()) {
     return 'directory'
   }
