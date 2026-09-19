@@ -15,6 +15,7 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
+import { collectFiles } from '../cli/file-collection.js'
 import { Embedder } from '../embedder/index.js'
 import { RemoteEmbedder } from '../embedder/remote.js'
 import { listDocuments } from '../features/list.js'
@@ -481,6 +482,7 @@ export class RAGServer {
    * query_documents tool handler
    */
   async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: QueryContent }> {
+    this.maybeAutoSync()
     // query_documents reads only LanceDB, so it stays callable in degraded
     // mode; `withWarnings` and `status` remain the diagnostic surface.
     const queryVector = await this.embedder.embed(args.query)
@@ -864,6 +866,7 @@ export class RAGServer {
    * producing root.
    */
   async handleListFiles(input: ListFilesInput = {}): Promise<{ content: RagTextContentBlock[] }> {
+    this.maybeAutoSync()
     // Root-dependent tool: fail fast on configError BEFORE any DB / FS access.
     // `assertConfigOk` throws `BaseDirsConfigError` (mapped to InvalidParams by
     // the central dispatcher); no local error-mapping catch here.
@@ -1016,6 +1019,7 @@ export class RAGServer {
    * handleDeleteFile's filePath-XOR-source resolution.
    */
   async handleReadChunkNeighbors(raw: unknown): Promise<{ content: RagTextContentBlock[] }> {
+    this.maybeAutoSync()
     const args = parseReadChunkNeighborsInput(raw)
     // No local error-mapping catch: `assertConfigOk` errors propagate with original identity to the
     // central dispatcher mapper. A `DatabaseError` reaches the mapper as a
@@ -1081,6 +1085,71 @@ export class RAGServer {
    * captured into the job record rather than escaping, and the run holds the
    * external-mutation guard until it is terminal.
    */
+  // ============================================
+  // Auto-sync: reconcile the index before reads when documents changed
+  // ============================================
+
+  private lastAutoSyncFingerprint: string | null = null
+  private autoSyncQueued = false
+  private lastAutoSyncAttempt = 0
+
+  private async computeDocsFingerprint(): Promise<string | null> {
+    const parts: string[] = []
+    for (const dir of this.baseDirs) {
+      const files = await collectFiles(dir, this.baseDirs, [])
+      for (const f of files.sort()) {
+        const st = await stat(f)
+        parts.push(`${f}:${st.size}:${Math.floor(st.mtimeMs)}`)
+      }
+    }
+    if (parts.length === 0) {
+      return null
+    }
+    // FNV-1a
+    let h = 0x811c9dc5
+    const s = parts.join('|')
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i)
+      h = Math.imul(h, 0x01000193)
+    }
+    return (h >>> 0).toString(16)
+  }
+
+  /**
+   * Fire-and-forget reconciliation: a cheap stat fingerprint (throttled to
+   * once per minute) against the last seen state; on drift, the existing
+   * sync job runs in the background so the current read stays on the live
+   * index and the next one picks up the fresh documents.
+   */
+  private maybeAutoSync(): void {
+    const now = Date.now()
+    if (this.autoSyncQueued || now - this.lastAutoSyncAttempt < 60_000) {
+      return
+    }
+    this.lastAutoSyncAttempt = now
+    this.autoSyncQueued = true
+    void (async () => {
+      try {
+        const fingerprint = await this.computeDocsFingerprint()
+        if (fingerprint === null) {
+          return
+        }
+        const firstScan = this.lastAutoSyncFingerprint === null
+        this.lastAutoSyncFingerprint = fingerprint
+        if (firstScan) {
+          console.error('Auto-sync: baseline recorded (no sync on first scan)')
+          return
+        }
+        console.error('Auto-sync: document changes detected, running background sync')
+        await this.handleSyncStart({} as SyncStartInput)
+      } catch (error: unknown) {
+        console.error('Auto-sync scan failed:', error instanceof Error ? error.message : error)
+      } finally {
+        this.autoSyncQueued = false
+      }
+    })()
+  }
+
   async handleSyncStart(input: SyncStartInput): Promise<{ content: RagTextContentBlock[] }> {
     // Root-dependent tool: fail fast on configError before registering a job.
     this.assertConfigOk()
