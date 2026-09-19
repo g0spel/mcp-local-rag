@@ -23,6 +23,8 @@ interface RAGServerConfigBase {
   device?: string
   /** Embedding quantization dtype (fp32, fp16, q8, int8, ...). Unset → fp32. */
   dtype?: string
+  /** Remote embedding server base URL (TEI-compatible /embed). Unset → local Transformers.js. */
+  embeddingServerUrl?: string
   /** Maximum distance threshold for quality filtering (optional) */
   maxDistance?: number
   /** Grouping mode for quality filtering (optional) */

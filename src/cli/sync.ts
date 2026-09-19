@@ -13,6 +13,7 @@ import { resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
+import type { RemoteEmbedder } from '../embedder/remote.js'
 import {
   formatSyncError,
   runSync as runSyncCore,
@@ -230,8 +231,8 @@ export async function runSync(args: string[], globalOptions: GlobalOptions = {})
 
   // Built on the first upsert only: a run with nothing to ingest must not pay
   // for the embedding model.
-  let embedder: Embedder | undefined
-  const ensureEmbedder = (): Embedder => {
+  let embedder: Embedder | RemoteEmbedder | undefined
+  const ensureEmbedder = (): Embedder | RemoteEmbedder => {
     embedder ??= createEmbedder(globalConfig)
     return embedder
   }

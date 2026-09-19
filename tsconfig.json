@@ -1,9 +1,9 @@
 {
   "compilerOptions": {
     // Basic configuration
-    "target": "ES2023",
+    "target": "ES2024",
     "module": "node16",
-    "lib": ["ES2023"],
+    "lib": ["ES2024"],
     "types": ["node"],
 
     // Output configuration

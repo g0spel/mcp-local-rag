@@ -16,6 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { Embedder } from '../embedder/index.js'
+import { RemoteEmbedder } from '../embedder/remote.js'
 import { listDocuments } from '../features/list.js'
 import {
   formatSyncError,
@@ -226,7 +227,7 @@ function supportsEmbeddedImages(filePath: string): boolean {
 export class RAGServer {
   private readonly server: Server
   private readonly vectorStore: VectorStore
-  private readonly embedder: Embedder
+  private readonly embedder: Embedder | RemoteEmbedder
   private readonly chunker: SemanticChunker
   private readonly parser: DocumentParser
   private readonly dbPath: string
@@ -330,7 +331,11 @@ export class RAGServer {
     if (config.dtype !== undefined) {
       embedderConfig.dtype = config.dtype
     }
-    this.embedder = new Embedder(embedderConfig)
+    const embedder =
+      config.embeddingServerUrl !== undefined
+        ? new RemoteEmbedder({ serverUrl: config.embeddingServerUrl, batchSize: 16 })
+        : new Embedder(embedderConfig)
+    this.embedder = embedder
     this.chunker = new SemanticChunker(
       config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
     )

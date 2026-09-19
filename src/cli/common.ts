@@ -2,6 +2,7 @@
 // plus base-directory resolution shared by every subcommand that scans files.
 
 import { Embedder } from '../embedder/index.js'
+import { RemoteEmbedder } from '../embedder/remote.js'
 import {
   type BaseDirsConfig,
   type BaseDirsConfigWarning,
@@ -11,7 +12,13 @@ import {
 import { getCauseChain } from '../utils/errors.js'
 import { checkSensitivePath } from '../utils/sensitive-path.js'
 import { VectorStore } from '../vectordb/index.js'
-import { type ResolvedGlobalConfig, resolveDevice, resolveDtype, validatePath } from './options.js'
+import {
+  type ResolvedGlobalConfig,
+  resolveDevice,
+  resolveDtype,
+  resolveEmbeddingServerUrl,
+  validatePath,
+} from './options.js'
 
 /**
  * Render a caught value for a CLI failure: every `.cause` link with its stack,
@@ -45,7 +52,11 @@ export function createVectorStore(config: ResolvedGlobalConfig): VectorStore {
  * Create an uninitialized Embedder from resolved global config.
  * Callers are responsible for managing the Embedder lifecycle.
  */
-export function createEmbedder(config: ResolvedGlobalConfig): Embedder {
+export function createEmbedder(config: ResolvedGlobalConfig): Embedder | RemoteEmbedder {
+  const serverUrl = resolveEmbeddingServerUrl(process.env['RAG_EMBEDDING_SERVER_URL'])
+  if (serverUrl) {
+    return new RemoteEmbedder({ serverUrl, batchSize: 16 })
+  }
   const embedderConfig: ConstructorParameters<typeof Embedder>[0] = {
     modelPath: config.modelName,
     batchSize: 16,

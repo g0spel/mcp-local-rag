@@ -5,6 +5,7 @@ import { resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
 import type { Embedder } from '../embedder/index.js'
+import type { RemoteEmbedder } from '../embedder/remote.js'
 import {
   buildPreparedFileVectorChunks,
   type PrepareFileForIngestOptions,
@@ -268,7 +269,7 @@ export async function resolveConfig(
 export interface SingleFileIngestCollaborators {
   parser: DocumentParser
   chunker: SemanticChunker
-  embedder: Embedder
+  embedder: Embedder | RemoteEmbedder
   vectorStore: VectorStore
 }
 

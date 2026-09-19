@@ -281,3 +281,14 @@ export function resolveDtype(value: string | undefined): string | undefined {
   }
   return value.trim()
 }
+
+/**
+ * Resolve RAG_EMBEDDING_SERVER_URL. Unset or whitespace-only resolves to
+ * `undefined`, which keeps the local Transformers.js pipeline selected.
+ */
+export function resolveEmbeddingServerUrl(value: string | undefined): string | undefined {
+  if (!value || value.trim() === '') {
+    return undefined
+  }
+  return value.trim().replace(/\/+$/, '')
+}
