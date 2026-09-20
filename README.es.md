@@ -285,7 +285,7 @@ El refuerzo de palabras clave está activado de forma predeterminada. Para corpu
 | `RAG_GROUPING` | sin configurar | `similar` conserva el primer grupo de relevancia; `related` conserva hasta dos y usa saltos importantes de distancia vectorial como límites. |
 | `RAG_MAX_DISTANCE` | sin configurar | Descarta resultados poco relevantes (por ejemplo, `0.5`). |
 | `RAG_MAX_FILES` | sin configurar | Limita los resultados a los N archivos mejor clasificados (por ejemplo, `1` deja solo el mejor archivo). |
-| `RAG_RERANK_CMD` | sin configurar | Solo servidor MCP: comando externo que reordena los resultados de la búsqueda. Sin configurar, el reordenamiento queda desactivado. |
+| `RAG_RERANK_CMD` | sin configurar | Solo servidor MCP: comando externo que reordena los resultados. Tu consulta y el texto encontrado se le envían. |
 | `RAG_RERANK_TIMEOUT_MS` | `10000` | Tiempo máximo por llamada de reordenamiento en milisegundos (100–600000). |
 
 En especificaciones de API y otros documentos con muchos identificadores, un peso mayor de palabras clave puede mejorar la clasificación de términos exactos:
@@ -301,9 +301,9 @@ En especificaciones de API y otros documentos con muchos identificadores, un pes
 
 ### Reordenamiento externo (`RAG_RERANK_CMD`)
 
-Con `RAG_RERANK_CMD`, un comando externo reordena los resultados de la herramienta MCP `query_documents`. El servidor escribe la consulta de búsqueda y el texto de los fragmentos encontrados en la entrada estándar de ese comando, así que un comando que contacta con un servicio remoto envía tu consulta y el contenido de tus documentos fuera de esta máquina. El reordenamiento permanece desactivado mientras la variable no esté configurada y la CLI no lo usa.
+Indica aquí un comando y el servidor le entrega cada conjunto de resultados para reordenarlo, junto con tu consulta y el texto de los fragmentos encontrados. Un comando que contacta con un servicio remoto envía todo eso fuera de esta máquina.
 
-El valor es un comando con sus argumentos, separados por espacios. Se ejecuta sin shell, por lo que el comando debe ser directamente ejecutable: en Windows no es posible iniciar un adaptador `.cmd` o `.bat` instalado por npm y hay que indicar el ejecutable directamente. El servidor añade `--query <texto>` y `--top <n>` a los argumentos que configures.
+Escribe el comando y sus argumentos separados por espacios. Tiene que ser un ejecutable: el servidor lo lanza sin shell, así que en Windows un adaptador `.cmd` instalado por npm no arranca.
 
 ```json
 "env": {
@@ -312,7 +312,7 @@ El valor es un comando con sus argumentos, separados por espacios. Se ejecuta si
 }
 ```
 
-Si el comando no puede iniciarse, falla, supera `RAG_RERANK_TIMEOUT_MS` o devuelve una salida que el servidor no puede asociar con sus propios resultados, los resultados conservan su orden original.
+Los resultados conservan su orden original si el comando falla, agota el tiempo o devuelve algo que el servidor no puede asociar con sus propios resultados.
 
 ## Cómo funciona
 

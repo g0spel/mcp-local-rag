@@ -285,7 +285,7 @@ Die Stichwortgewichtung ist standardmäßig aktiv. Für Korpora, die eine streng
 | `RAG_GROUPING` | nicht gesetzt | `similar` behält die erste Relevanzgruppe; `related` behält bis zu zwei Gruppen und trennt sie an deutlichen Sprüngen der Vektordistanz. |
 | `RAG_MAX_DISTANCE` | nicht gesetzt | Filtert wenig relevante Treffer heraus, zum Beispiel mit `0.5`. |
 | `RAG_MAX_FILES` | nicht gesetzt | Beschränkt die Treffer auf die besten N Dateien, zum Beispiel mit `1` auf die beste Datei. |
-| `RAG_RERANK_CMD` | nicht gesetzt | Nur MCP-Server: externer Befehl, der die Suchtreffer neu ordnet. Nicht gesetzt deaktiviert das Neuordnen. |
+| `RAG_RERANK_CMD` | nicht gesetzt | Nur MCP-Server: externer Befehl, der die Treffer neu ordnet. Deine Suchanfrage und der gefundene Text gehen an ihn. |
 | `RAG_RERANK_TIMEOUT_MS` | `10000` | Zeitbudget pro Neuordnung in Millisekunden (100–600000). |
 
 Bei API-Spezifikationen und anderen Dokumenten mit vielen Bezeichnern kann ein höheres Stichwortgewicht die Rangfolge exakter Treffer verbessern:
@@ -301,9 +301,9 @@ Bei API-Spezifikationen und anderen Dokumenten mit vielen Bezeichnern kann ein h
 
 ### Externes Neuordnen (`RAG_RERANK_CMD`)
 
-Mit `RAG_RERANK_CMD` ordnet ein externer Befehl die Treffer des MCP-Tools `query_documents` neu. Der Server schreibt die Suchanfrage und den Text der gefundenen Abschnitte auf die Standardeingabe dieses Befehls. Ein Befehl, der einen entfernten Dienst aufruft, sendet damit deine Suchanfrage und deine Dokumentinhalte von diesem Rechner fort. Das Neuordnen bleibt deaktiviert, solange die Variable nicht gesetzt ist, und die CLI verwendet es nicht.
+Nenne hier einen Befehl, und der Server übergibt ihm jede Trefferliste zum Neuordnen, zusammen mit deiner Suchanfrage und dem Text der gefundenen Abschnitte. Ein Befehl, der einen entfernten Dienst aufruft, sendet all das von diesem Rechner fort.
 
-Der Wert ist ein Befehl mit seinen Argumenten, getrennt durch Leerzeichen. Er wird ohne Shell ausgeführt, deshalb muss der Befehl direkt ausführbar sein: Unter Windows lässt sich ein von npm installierter `.cmd`- oder `.bat`-Wrapper nicht starten, die ausführbare Datei muss direkt benannt werden. Der Server hängt `--query <Text>` und `--top <n>` an die konfigurierten Argumente an.
+Gib den Befehl und seine Argumente durch Leerzeichen getrennt an. Es muss eine ausführbare Datei sein: Der Server startet sie ohne Shell, deshalb lässt sich ein von npm installierter `.cmd`-Wrapper unter Windows nicht starten.
 
 ```json
 "env": {
@@ -312,7 +312,7 @@ Der Wert ist ein Befehl mit seinen Argumenten, getrennt durch Leerzeichen. Er wi
 }
 ```
 
-Lässt sich der Befehl nicht starten, schlägt er fehl, überschreitet er `RAG_RERANK_TIMEOUT_MS` oder liefert er eine Ausgabe, die der Server seinen eigenen Treffern nicht zuordnen kann, bleibt die ursprüngliche Reihenfolge erhalten.
+Schlägt der Befehl fehl, läuft er in die Zeitgrenze oder liefert er etwas, das der Server seinen eigenen Treffern nicht zuordnen kann, bleibt die ursprüngliche Reihenfolge erhalten.
 
 ## Funktionsweise
 

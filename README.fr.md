@@ -285,7 +285,7 @@ Le renforcement par mots-clés est activé par défaut. Pour les corpus qui néc
 | `RAG_GROUPING` | non définie | `similar` conserve le premier groupe de pertinence ; `related` en conserve jusqu'à deux et utilise les écarts importants de distance vectorielle comme limites. |
 | `RAG_MAX_DISTANCE` | non définie | Écarte les résultats peu pertinents, par exemple avec `0.5`. |
 | `RAG_MAX_FILES` | non définie | Limite les résultats aux N fichiers les mieux classés, par exemple `1` pour le meilleur fichier uniquement. |
-| `RAG_RERANK_CMD` | non définie | Serveur MCP uniquement : commande externe qui reclasse les résultats de recherche. Non définie, le reclassement est désactivé. |
+| `RAG_RERANK_CMD` | non définie | Serveur MCP uniquement : commande externe qui reclasse les résultats. Votre requête et le texte trouvé lui sont transmis. |
 | `RAG_RERANK_TIMEOUT_MS` | `10000` | Délai maximal par reclassement, en millisecondes (100–600000). |
 
 Pour les spécifications d'API et les autres documents comportant de nombreux identifiants, un poids plus élevé des mots-clés peut améliorer le classement des termes exacts :
@@ -301,9 +301,9 @@ Pour les spécifications d'API et les autres documents comportant de nombreux id
 
 ### Reclassement externe (`RAG_RERANK_CMD`)
 
-Avec `RAG_RERANK_CMD`, une commande externe reclasse les résultats de l'outil MCP `query_documents`. Le serveur écrit la requête de recherche et le texte des passages trouvés sur l'entrée standard de cette commande : une commande qui appelle un service distant envoie donc votre requête et le contenu de vos documents hors de cette machine. Le reclassement reste désactivé tant que la variable n'est pas définie, et la CLI ne l'utilise pas.
+Indiquez ici une commande et le serveur lui confie chaque liste de résultats à reclasser, avec votre requête et le texte des passages trouvés. Une commande qui appelle un service distant envoie tout cela hors de cette machine.
 
-La valeur est une commande et ses arguments, séparés par des espaces. Elle s'exécute sans shell, la commande doit donc être directement exécutable : sous Windows, un script `.cmd` ou `.bat` installé par npm ne peut pas être lancé et il faut nommer l'exécutable directement. Le serveur ajoute `--query <texte>` et `--top <n>` aux arguments que vous configurez.
+Donnez la commande et ses arguments séparés par des espaces. Ce doit être un exécutable : le serveur le lance sans shell, si bien qu'un script `.cmd` installé par npm ne démarre pas sous Windows.
 
 ```json
 "env": {
@@ -312,7 +312,7 @@ La valeur est une commande et ses arguments, séparés par des espaces. Elle s'e
 }
 ```
 
-Si la commande ne peut pas démarrer, échoue, dépasse `RAG_RERANK_TIMEOUT_MS` ou renvoie une sortie que le serveur ne peut pas associer à ses propres résultats, les résultats conservent leur ordre initial.
+Les résultats conservent leur ordre d'origine si la commande échoue, dépasse le délai ou renvoie quelque chose que le serveur ne peut pas rattacher à ses propres résultats.
 
 ## Fonctionnement
 

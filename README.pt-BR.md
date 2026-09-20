@@ -285,7 +285,7 @@ O reforço por palavras-chave é ativado por padrão. Para acervos que exigem um
 | `RAG_GROUPING` | não definido | `similar` mantém o primeiro grupo de relevância; `related` mantém até dois e usa saltos relevantes na distância vetorial como limites. |
 | `RAG_MAX_DISTANCE` | não definido | Descarta resultados pouco relevantes, por exemplo, com `0.5`. |
 | `RAG_MAX_FILES` | não definido | Limita os resultados aos N arquivos mais bem classificados, por exemplo, `1` para apenas o melhor arquivo. |
-| `RAG_RERANK_CMD` | não definido | Somente servidor MCP: comando externo que reordena os resultados da busca. Sem definição, o reordenamento fica desativado. |
+| `RAG_RERANK_CMD` | não definido | Somente servidor MCP: comando externo que reordena os resultados. Sua consulta e o texto encontrado são enviados a ele. |
 | `RAG_RERANK_TIMEOUT_MS` | `10000` | Tempo máximo por reordenamento em milissegundos (100–600000). |
 
 Em especificações de API e outros documentos com muitos identificadores, um peso maior para palavras-chave pode melhorar a classificação de termos exatos:
@@ -301,9 +301,9 @@ Em especificações de API e outros documentos com muitos identificadores, um pe
 
 ### Reordenamento externo (`RAG_RERANK_CMD`)
 
-Com `RAG_RERANK_CMD`, um comando externo reordena os resultados da ferramenta MCP `query_documents`. O servidor escreve a consulta de busca e o texto dos trechos encontrados na entrada padrão desse comando, portanto um comando que acessa um serviço remoto envia sua consulta e o conteúdo dos seus documentos para fora desta máquina. O reordenamento fica desativado enquanto a variável não for definida, e a CLI não o utiliza.
+Informe aqui um comando e o servidor entrega a ele cada conjunto de resultados para reordenar, junto com sua consulta e o texto dos trechos encontrados. Um comando que acessa um serviço remoto envia tudo isso para fora desta máquina.
 
-O valor é um comando com seus argumentos, separados por espaços. Ele é executado sem shell, então o comando precisa ser diretamente executável: no Windows, um atalho `.cmd` ou `.bat` instalado pelo npm não pode ser iniciado e é necessário informar o executável diretamente. O servidor acrescenta `--query <texto>` e `--top <n>` aos argumentos que você configurar.
+Escreva o comando e seus argumentos separados por espaços. Precisa ser um executável: o servidor o inicia sem shell, então no Windows um atalho `.cmd` instalado pelo npm não abre.
 
 ```json
 "env": {
@@ -312,7 +312,7 @@ O valor é um comando com seus argumentos, separados por espaços. Ele é execut
 }
 ```
 
-Se o comando não puder ser iniciado, falhar, ultrapassar `RAG_RERANK_TIMEOUT_MS` ou devolver uma saída que o servidor não consiga associar aos próprios resultados, os resultados mantêm a ordem original.
+Os resultados mantêm a ordem original se o comando falhar, estourar o tempo ou devolver algo que o servidor não consiga associar aos próprios resultados.
 
 ## Como funciona
 

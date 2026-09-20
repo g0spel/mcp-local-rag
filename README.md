@@ -363,7 +363,7 @@ server and to CLI `query` alike.
 | `RAG_GROUPING` | (not set) | `similar` keeps the first relevance group; `related` keeps up to two, using significant vector-distance gaps as boundaries. |
 | `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
 | `RAG_MAX_FILES` | (not set) | Limit results to top N files (e.g., `1` for single best file). |
-| `RAG_RERANK_CMD` | (not set) | MCP server only: external command that reorders search results. Not set disables reranking. |
+| `RAG_RERANK_CMD` | (not set) | MCP server only: external command that reorders results. Your query and the matched text are sent to it. |
 | `RAG_RERANK_TIMEOUT_MS` | `10000` | Time budget per rerank call in milliseconds (100–600000). |
 
 For API specifications and other documents containing many identifiers, a stronger keyword
@@ -380,16 +380,12 @@ weight can improve exact-term ranking:
 
 ### External Reranking (`RAG_RERANK_CMD`)
 
-Setting `RAG_RERANK_CMD` lets an external command reorder the results of the MCP
-`query_documents` tool. The server writes the search query and the text of the matched chunks to
-that command's standard input, so a command that contacts a remote service sends your query and
-your document content off this machine. Reranking stays off until you set the variable, and the
-CLI does not use it.
+Name a command here and the server hands it each set of search results to reorder, together with
+your query and the text of the matched chunks. A command that calls a remote service sends all of
+that off this machine.
 
-The value is a command and its arguments, separated by spaces. It runs without a shell, so the
-command must be directly executable: on Windows an npm-installed `.cmd` or `.bat` shim cannot be
-started and the executable has to be named directly. The server appends `--query <text>` and
-`--top <n>` to the arguments you configure.
+Give the command and its arguments separated by spaces. It has to be an executable: the server
+runs it without a shell, so an npm-installed `.cmd` shim on Windows will not start.
 
 ```json
 "env": {
@@ -398,8 +394,8 @@ started and the executable has to be named directly. The server appends `--query
 }
 ```
 
-If the command cannot start, fails, exceeds `RAG_RERANK_TIMEOUT_MS`, or returns output the server
-cannot match to its own results, the results keep their original order.
+Results keep their original order if the command fails, times out, or returns anything the server
+cannot match back to its own results.
 
 ## How It Works
 
