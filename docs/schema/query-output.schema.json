@@ -25,7 +25,7 @@
         },
         "score": {
           "type": "number",
-          "description": "Relevance DISTANCE, not a similarity: LOWER IS BETTER. It originates as a LanceDB dot distance and, when keyword boost is active, is divided by the normalized BM25 match (`score / (1 + keywordScore * weight)`), which keeps the value on the distance scale. Results are sorted ascending by this value. A consumer that fuses it with another ranker's score must treat it as ascending-is-better; assuming the opposite silently inverts the ranking. Magnitudes are only comparable within a single response."
+          "description": "Relevance distance, so a lower value is a better match. Magnitudes are comparable only within a single response."
         },
         "fileTitle": {
           "type": ["string", "null"],
