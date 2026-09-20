@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { rerankCandidates } from '../index.js'
+import { type RerankResult, rerankCandidates } from '../index.js'
 
 const workDir = mkdtempSync(join(tmpdir(), 'rerank-test-'))
 let fixtureCount = 0
@@ -41,23 +41,16 @@ process.stdout.write(JSON.stringify(items))
 `
 }
 
-interface TestCandidate {
-  id: string
-  filePath: string
-  chunkIndex: number
-  text: string
-  score: number
-  fileTitle: string | null
-}
+type TestCandidate = RerankResult
 
 function candidate(id: string, chunkIndex: number): TestCandidate {
   return {
-    id: `row-${id}`,
     filePath: join(workDir, `${id}.md`),
     chunkIndex,
     text: `confidential body of ${id}`,
     score: 0.25,
     fileTitle: `Title ${id}`,
+    images: [],
   }
 }
 
@@ -140,7 +133,7 @@ describe('rerankCandidates with a cooperating child', () => {
     ])
   })
 
-  it('should ask for no more than the candidates it sent', async () => {
+  it('should pass the requested top through, not the candidate count', async () => {
     const argvPath = artifactPath('argv')
     const command = fixtureCommand(recordingReranker(argvPath, artifactPath('stdin')))
 
@@ -153,8 +146,26 @@ describe('rerankCandidates with a cooperating child', () => {
     })
 
     const argv = JSON.parse(readFileSync(argvPath, 'utf8'))
-    expect(argv[argv.indexOf('--top') + 1]).toBe('2')
+    expect(argv[argv.indexOf('--top') + 1]).toBe('10')
     expect(result).toEqual([candidates[1], candidates[0]])
+  })
+
+  it('should run the command with no candidates and take its empty answer', async () => {
+    const argvPath = artifactPath('argv')
+    const command = fixtureCommand(recordingReranker(argvPath, artifactPath('stdin')))
+
+    const result = await rerankCandidates({
+      candidates: [],
+      query: 'cats',
+      top: 5,
+      command,
+      timeoutMs: 5000,
+    })
+
+    expect(result).toEqual([])
+    expect(stderrLines()).toEqual([])
+    const argv = JSON.parse(readFileSync(argvPath, 'utf8'))
+    expect(argv[argv.indexOf('--top') + 1]).toBe('5')
   })
 })
 
@@ -277,7 +288,7 @@ setTimeout(() => {
     expect(stderrLines()).toHaveLength(1)
   })
 
-  it('should return the pre-rerank ordering when the child returns an extra item', async () => {
+  it('should take a repeated item as the command s answer', async () => {
     const command = fixtureCommand(`
 import { readFileSync } from 'node:fs'
 const items = JSON.parse(readFileSync(0, 'utf8'))
@@ -292,8 +303,8 @@ process.stdout.write(JSON.stringify([...items, items[0]]))
       timeoutMs: 5000,
     })
 
-    expect(result).toEqual(candidates)
-    expect(stderrLines()).toHaveLength(1)
+    expect(result).toHaveLength(candidates.length + 1)
+    expect(stderrLines()).toHaveLength(0)
   })
 
   it('should carry neither document text nor the configured arguments on stderr', async () => {

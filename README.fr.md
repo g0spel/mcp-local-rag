@@ -307,12 +307,14 @@ Donnez la commande et ses arguments séparés par des espaces. Ce doit être un 
 
 ```json
 "env": {
-  "RAG_RERANK_CMD": "/path/to/reranker --score-field score",
+  "RAG_RERANK_CMD": "/path/to/reranker",
   "RAG_RERANK_TIMEOUT_MS": "10000"
 }
 ```
 
-Les résultats conservent leur ordre d'origine si la commande échoue, dépasse le délai ou renvoie quelque chose que le serveur ne peut pas rattacher à ses propres résultats.
+La commande reçoit chaque résultat dans la forme publiée à [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) et doit répondre dans cette même forme. À l'intérieur, elle décide de tout : ce qu'elle garde, comment elle l'ordonne et ce que dit le texte. Ce qu'elle renvoie est ce que vous voyez.
+
+Les résultats conservent leur ordre d'origine si la commande échoue, dépasse le délai ou répond avec autre chose que cette forme.
 
 ## Fonctionnement
 

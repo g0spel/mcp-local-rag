@@ -37,7 +37,7 @@ import {
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, ValidationError } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
-import { rerankCandidates } from '../rerank/index.js'
+import { type RerankResult, rerankCandidates } from '../rerank/index.js'
 import { type BaseDirsConfigError, displayPath } from '../utils/base-dirs.js'
 import { toError } from '../utils/errors.js'
 import {
@@ -66,7 +66,7 @@ import {
 } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
 import { isRecord } from '../utils/type-guards.js'
-import { type SearchResult, type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { type VectorChunk, VectorStore, type VisualAttachment } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
 import {
   appendConfigWarnings,
@@ -100,7 +100,6 @@ import type {
   ListFilesInput,
   ListFilesResult,
   QueryDocumentsInput,
-  QueryResult,
   RAGServerConfig,
   ReadChunkNeighborsResultItem,
   SourceEntry,
@@ -486,31 +485,22 @@ export class RAGServer {
   /**
    * query_documents tool handler
    */
-  /**
-   * Final result ordering for one query. Reordering happens here, on
-   * `SearchResult[]`, so the serialized results and the attachment hydration
-   * that is index-aligned with them need no change.
-   *
-   * Without a configured reranker, and with nothing to reorder, the search
-   * ordering is returned untouched: `search` already applied the caller's
-   * limit, so only the expanded candidate set is trimmed.
-   */
-  private async orderCandidates(
-    candidates: SearchResult[],
+  /** Hands the finished results to the configured command and takes its answer. */
+  private async applyReranker(
+    results: RerankResult[],
     query: string,
     limit: number
-  ): Promise<SearchResult[]> {
-    if (this.rerankCommand === undefined || candidates.length < 2) {
-      return candidates
+  ): Promise<RerankResult[]> {
+    if (this.rerankCommand === undefined) {
+      return results
     }
-    const reranked = await rerankCandidates({
-      candidates,
+    return rerankCandidates({
+      candidates: results,
       query,
       top: limit,
       command: this.rerankCommand,
       timeoutMs: this.rerankTimeoutMs,
     })
-    return reranked.slice(0, limit)
   }
 
   async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: QueryContent }> {
@@ -535,33 +525,12 @@ export class RAGServer {
       ...(args.scope !== undefined ? { scope: toArray(args.scope) } : {}),
     })
 
-    const searchResults = await this.orderCandidates(candidates, args.query, limit)
-
-    // Format results with source restoration for raw-data files
-    const results: QueryResult[] = searchResults.map((result) => {
-      const queryResult: QueryResult = {
-        filePath: result.filePath,
-        chunkIndex: result.chunkIndex,
-        text: result.text,
-        score: result.score,
-        fileTitle: result.fileTitle ?? null,
-      }
-
-      if (isManagedRawDataPath(result.filePath, this.dbPath)) {
-        const source = extractSourceFromPath(result.filePath)
-        if (source) {
-          queryResult.source = source
-        }
-      }
-
-      return queryResult
-    })
-
-    let hydratedRows: Awaited<ReturnType<VectorStore['hydrateVisualAttachments']>>['rows'] = []
+    // Hydrated before the command runs, so its answer needs no identity lookup.
     let attachmentWarning: RagContentBlock | null = null
+    let attachmentsById = new Map<string, VisualAttachment[]>()
     try {
-      const hydration = await this.vectorStore.hydrateVisualAttachments(searchResults)
-      hydratedRows = hydration.rows
+      const hydration = await this.vectorStore.hydrateVisualAttachments(candidates)
+      attachmentsById = new Map(hydration.rows.map((row) => [row.id, row.attachments]))
       if (hydration.omittedCount > 0) {
         attachmentWarning = attachmentOmissionWarning(hydration.omittedCount)
       }
@@ -569,16 +538,47 @@ export class RAGServer {
       attachmentWarning = attachmentHydrationFailureWarning()
     }
 
+    // Format results with source restoration for raw-data files
+    const retrieved: RerankResult[] = candidates.map((candidate) => {
+      const result: RerankResult = {
+        filePath: candidate.filePath,
+        chunkIndex: candidate.chunkIndex,
+        text: candidate.text,
+        score: candidate.score,
+        fileTitle: candidate.fileTitle ?? null,
+        images: attachmentsById.get(candidate.id) ?? [],
+      }
+
+      if (isManagedRawDataPath(candidate.filePath, this.dbPath)) {
+        const source = extractSourceFromPath(candidate.filePath)
+        if (source) {
+          result.source = source
+        }
+      }
+
+      return result
+    })
+
+    // `search` already applied the limit, so only the expanded set is trimmed.
+    const results =
+      this.rerankCommand === undefined
+        ? retrieved
+        : (await this.applyReranker(retrieved, args.query, limit)).slice(0, limit)
+
     const content: QueryContent = [
       {
         type: 'text',
-        text: JSON.stringify(results, null, 2),
+        // Attachments go out as image blocks below, never inside this JSON.
+        text: JSON.stringify(
+          results.map(({ images: _images, ...rest }) => rest),
+          null,
+          2
+        ),
       },
     ]
 
-    const attachmentsByIdentity = new Map(hydratedRows.map((row) => [row.id, row.attachments]))
-    for (const [resultIndex, result] of results.entries()) {
-      const attachments = attachmentsByIdentity.get(searchResults[resultIndex]?.id ?? '') ?? []
+    for (const result of results) {
+      const attachments = result.images
       for (const attachment of attachments) {
         content.push({
           type: 'text',

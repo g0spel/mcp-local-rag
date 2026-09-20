@@ -10,17 +10,17 @@
 import { spawn } from 'node:child_process'
 import { errorCode } from '../utils/type-guards.js'
 import { buildRerankArgv, parseRerankCommand } from './command.js'
-import { matchRerankResponse, type RerankCandidate } from './response.js'
+import { type RerankResult, validateRerankResponse } from './response.js'
 
-export type { RerankCandidate } from './response.js'
+export type { RerankResult } from './response.js'
 
-/** One rerank call: the candidates to order, and the command that orders them. */
-export interface RerankRequest<T extends RerankCandidate> {
-  /** Search candidates in their pre-rerank order. Returned as-is on failure. */
-  candidates: T[]
+/** One rerank call: the results to hand over, and the command that handles them. */
+export interface RerankRequest {
+  /** Search results in their pre-rerank order. Returned as-is on failure. */
+  candidates: RerankResult[]
   /** Query text, passed to the command as its own argv element. */
   query: string
-  /** Result count the caller wants; the command is asked for at most this many. */
+  /** Result count the caller wants, passed through as `--top`. */
   top: number
   /** Configured command, parsed as a whitespace-separated argv vector. */
   command: string
@@ -30,22 +30,9 @@ export interface RerankRequest<T extends RerankCandidate> {
 
 type ChildRun = { ok: true; stdout: string } | { ok: false; reason: string }
 
-/**
- * Stdin payload: `docs/schema/query-output.schema.json`. `images` is always
- * empty because attachments are hydrated after reranking, so the payload is
- * schema-valid and no image bytes are read for a candidate that gets trimmed.
- */
-function buildRerankPayload(candidates: RerankCandidate[]): string {
-  return JSON.stringify(
-    candidates.map((candidate) => ({
-      filePath: candidate.filePath,
-      chunkIndex: candidate.chunkIndex,
-      text: candidate.text,
-      score: candidate.score,
-      fileTitle: candidate.fileTitle,
-      images: [],
-    }))
-  )
+/** Complete results in `docs/schema/query-output.schema.json` form. */
+function buildRerankPayload(candidates: RerankResult[]): string {
+  return JSON.stringify(candidates)
 }
 
 /**
@@ -131,28 +118,19 @@ function fallback<T>(candidates: T[], reason: string): T[] {
 }
 
 /**
- * Returns the `min(top, candidates.length)` best candidates in the order the
- * configured command gave, or every candidate unchanged when anything about
- * that run is not exactly what the contract allows. Never throws.
- *
- * The caller decides when reranking is worth a process at all, and trims the
- * fallback ordering itself.
+ * What the command produced, or the results unchanged when it could not run or
+ * answered with something that is not a valid result set. Never throws.
  */
-export async function rerankCandidates<T extends RerankCandidate>(
-  request: RerankRequest<T>
-): Promise<T[]> {
+export async function rerankCandidates(request: RerankRequest): Promise<RerankResult[]> {
   const { candidates, query, top, command, timeoutMs } = request
   const parsed = parseRerankCommand(command)
   if (parsed === undefined) {
     return fallback(candidates, 'the configured command is empty')
   }
 
-  // Asking for more than was sent would leave the accepted count ambiguous:
-  // acceptance requires exactly `min(top, candidateCount)` items back.
-  const expectedCount = Math.min(top, candidates.length)
   const run = await runRerankCommand(
     parsed.executable,
-    buildRerankArgv(parsed, query, expectedCount),
+    buildRerankArgv(parsed, query, top),
     buildRerankPayload(candidates),
     timeoutMs
   )
@@ -160,6 +138,6 @@ export async function rerankCandidates<T extends RerankCandidate>(
     return fallback(candidates, run.reason)
   }
 
-  const matched = matchRerankResponse(run.stdout, candidates, expectedCount)
-  return matched.ok ? matched.candidates : fallback(candidates, matched.reason)
+  const validated = validateRerankResponse(run.stdout)
+  return validated.ok ? validated.results : fallback(candidates, validated.reason)
 }

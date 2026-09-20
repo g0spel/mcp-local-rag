@@ -307,12 +307,14 @@ Escribe el comando y sus argumentos separados por espacios. Tiene que ser un eje
 
 ```json
 "env": {
-  "RAG_RERANK_CMD": "/path/to/reranker --score-field score",
+  "RAG_RERANK_CMD": "/path/to/reranker",
   "RAG_RERANK_TIMEOUT_MS": "10000"
 }
 ```
 
-Los resultados conservan su orden original si el comando falla, agota el tiempo o devuelve algo que el servidor no puede asociar con sus propios resultados.
+El comando recibe cada resultado con la forma publicada en [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) y debe responder con esa misma forma. Dentro de ella lo decide todo: qué conservar, cómo ordenarlo y qué dice el texto. Lo que devuelva es lo que verás.
+
+Los resultados conservan su orden original si el comando falla, agota el tiempo o responde con algo que no tiene esa forma.
 
 ## Cómo funciona
 

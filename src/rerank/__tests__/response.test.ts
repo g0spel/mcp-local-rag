@@ -1,175 +1,136 @@
-// Response matching: the child's stdout is untrusted, so it is accepted only as
-// an ordering over candidates the server already holds. Nothing from the child
-// reaches the caller except that order.
+// Tests validateRerankResponse: the server checks the form of the command's
+// answer and leaves the content to the command.
 
 import { describe, expect, it } from 'vitest'
-import { matchRerankResponse } from '../response.js'
+import { validateRerankResponse } from '../response.js'
 
-interface TestCandidate {
-  id: string
-  filePath: string
-  chunkIndex: number
-  text: string
-  score: number
-  fileTitle: string | null
+const result = {
+  filePath: '/docs/auth.md',
+  chunkIndex: 0,
+  text: 'bearer token flow',
+  score: 0.21,
+  fileTitle: 'Auth Guide',
+  images: [],
 }
 
-function candidate(id: string, chunkIndex: number): TestCandidate {
-  return {
-    id,
-    filePath: `/docs/${id}.md`,
-    chunkIndex,
-    text: `text of ${id}`,
-    score: 0.5,
-    fileTitle: id,
+const out = (items: unknown[]): string => JSON.stringify(items)
+
+describe('validateRerankResponse acceptance', () => {
+  it('accepts a schema-conforming result set', () => {
+    const match = validateRerankResponse(out([result]))
+
+    expect(match.ok).toBe(true)
+    if (match.ok) {
+      expect(match.results).toEqual([result])
+    }
+  })
+
+  it('accepts fewer results than were sent, because the count is the command s decision', () => {
+    const match = validateRerankResponse(out([result]))
+
+    expect(match.ok).toBe(true)
+  })
+
+  it('accepts an empty result set as an answer rather than a failure', () => {
+    const match = validateRerankResponse('[]')
+
+    expect(match.ok).toBe(true)
+    if (match.ok) {
+      expect(match.results).toEqual([])
+    }
+  })
+
+  it('accepts a chunk the server never sent', () => {
+    const match = validateRerankResponse(out([{ ...result, filePath: '/never/sent.md' }]))
+
+    expect(match.ok).toBe(true)
+  })
+
+  it('accepts the same chunk twice', () => {
+    const match = validateRerankResponse(out([result, result]))
+
+    expect(match.ok).toBe(true)
+    if (match.ok) {
+      expect(match.results).toHaveLength(2)
+    }
+  })
+
+  it('carries through a property the schema does not describe', () => {
+    const match = validateRerankResponse(out([{ ...result, rerankScore: 0.93 }]))
+
+    expect(match.ok).toBe(true)
+    if (match.ok) {
+      expect(match.results[0]).toHaveProperty('rerankScore', 0.93)
+    }
+  })
+
+  it('carries through text the command rewrote', () => {
+    const match = validateRerankResponse(out([{ ...result, text: 'one sentence only' }]))
+
+    expect(match.ok).toBe(true)
+    if (match.ok) {
+      expect(match.results[0]?.text).toBe('one sentence only')
+    }
+  })
+
+  it('accepts an attachment that matches the schema', () => {
+    const images = [{ imageIndex: 0, mimeType: 'image/png', data: 'aW1hZ2U=' }]
+    const match = validateRerankResponse(out([{ ...result, images }]))
+
+    expect(match.ok).toBe(true)
+    if (match.ok) {
+      expect(match.results[0]?.images).toEqual(images)
+    }
+  })
+
+  it('accepts a source string on a raw-data result', () => {
+    const match = validateRerankResponse(out([{ ...result, source: 'https://example.com/page' }]))
+
+    expect(match.ok).toBe(true)
+  })
+
+  it('tolerates surrounding whitespace around the JSON array', () => {
+    const match = validateRerankResponse(`\n  ${out([result])}\n`)
+
+    expect(match.ok).toBe(true)
+  })
+})
+
+describe('validateRerankResponse rejection', () => {
+  const rejects = (label: string, stdout: string): void => {
+    it(`rejects ${label}`, () => {
+      const match = validateRerankResponse(stdout)
+
+      expect(match.ok).toBe(false)
+    })
   }
-}
 
-const candidates = [candidate('a', 0), candidate('b', 1), candidate('c', 2)]
+  rejects('stdout that does not parse as JSON', 'not json')
+  rejects('JSON that is not an array', '{"results":[]}')
+  rejects('a missing required property', out([{ ...result, text: undefined }]))
+  rejects('a filePath of the wrong type', out([{ ...result, filePath: 7 }]))
+  rejects('a non-integer chunkIndex', out([{ ...result, chunkIndex: 1.5 }]))
+  rejects('a negative chunkIndex', out([{ ...result, chunkIndex: -1 }]))
+  rejects('a non-finite score', out([{ ...result, score: Number.NaN }]))
+  rejects('a fileTitle that is neither string nor null', out([{ ...result, fileTitle: 3 }]))
+  rejects('a source of the wrong type', out([{ ...result, source: 42 }]))
+  rejects('images that are not an array', out([{ ...result, images: {} }]))
+  rejects(
+    'an unsupported mimeType',
+    out([{ ...result, images: [{ imageIndex: 0, mimeType: 'image/gif', data: 'x' }] }])
+  )
+  rejects(
+    'an attachment missing its data',
+    out([{ ...result, images: [{ imageIndex: 0, mimeType: 'image/png' }] }])
+  )
 
-function childItem(source: TestCandidate, overrides: Record<string, unknown> = {}) {
-  return {
-    filePath: source.filePath,
-    chunkIndex: source.chunkIndex,
-    text: 'rewritten by the child',
-    score: 0.01,
-    fileTitle: 'rewritten by the child',
-    images: [],
-    ...overrides,
-  }
-}
+  it('carries neither document text nor a path in its rejection reason', () => {
+    const match = validateRerankResponse(out([{ ...result, chunkIndex: 'zero' }]))
 
-function stdoutOf(items: unknown[]): string {
-  return JSON.stringify(items)
-}
-
-describe('matchRerankResponse', () => {
-  it("should return the server's own candidates in the child's order", () => {
-    const result = matchRerankResponse(
-      stdoutOf([childItem(candidates[2]), childItem(candidates[0]), childItem(candidates[1])]),
-      candidates,
-      3
-    )
-
-    expect(result).toEqual({ ok: true, candidates: [candidates[2], candidates[0], candidates[1]] })
-  })
-
-  it('should accept a response trimmed to the expected count', () => {
-    const result = matchRerankResponse(
-      stdoutOf([childItem(candidates[1]), childItem(candidates[2])]),
-      candidates,
-      2
-    )
-
-    expect(result).toEqual({ ok: true, candidates: [candidates[1], candidates[2]] })
-  })
-
-  it('should tolerate surrounding whitespace around the JSON array', () => {
-    const result = matchRerankResponse(
-      `\n  ${stdoutOf([childItem(candidates[0])])}\n`,
-      [candidates[0]],
-      1
-    )
-
-    expect(result).toEqual({ ok: true, candidates: [candidates[0]] })
-  })
-
-  it('should reject an unknown identifier', () => {
-    const unknown = childItem(candidates[0], { filePath: '/docs/elsewhere.md' })
-    const result = matchRerankResponse(
-      stdoutOf([unknown, childItem(candidates[1]), childItem(candidates[2])]),
-      candidates,
-      3
-    )
-
-    expect(result.ok).toBe(false)
-  })
-
-  it('should reject an identifier whose chunkIndex belongs to no candidate', () => {
-    const result = matchRerankResponse(
-      stdoutOf([
-        childItem(candidates[0], { chunkIndex: 99 }),
-        childItem(candidates[1]),
-        childItem(candidates[2]),
-      ]),
-      candidates,
-      3
-    )
-
-    expect(result.ok).toBe(false)
-  })
-
-  it('should reject a duplicated identifier', () => {
-    const result = matchRerankResponse(
-      stdoutOf([childItem(candidates[0]), childItem(candidates[0]), childItem(candidates[1])]),
-      candidates,
-      3
-    )
-
-    expect(result.ok).toBe(false)
-  })
-
-  it('should reject a dropped candidate', () => {
-    const result = matchRerankResponse(
-      stdoutOf([childItem(candidates[0]), childItem(candidates[1])]),
-      candidates,
-      3
-    )
-
-    expect(result.ok).toBe(false)
-  })
-
-  it('should reject an extra item', () => {
-    const result = matchRerankResponse(
-      stdoutOf([
-        childItem(candidates[0]),
-        childItem(candidates[1]),
-        childItem(candidates[2]),
-        childItem(candidates[2]),
-      ]),
-      candidates,
-      2
-    )
-
-    expect(result.ok).toBe(false)
-  })
-
-  it('should reject stdout that does not parse as JSON', () => {
-    expect(matchRerankResponse('not json at all', candidates, 3).ok).toBe(false)
-    expect(matchRerankResponse('', candidates, 3).ok).toBe(false)
-  })
-
-  it('should reject JSON that is not an array', () => {
-    expect(matchRerankResponse('{"results":[]}', candidates, 3).ok).toBe(false)
-    expect(matchRerankResponse('null', candidates, 3).ok).toBe(false)
-    expect(matchRerankResponse('"a string"', candidates, 3).ok).toBe(false)
-  })
-
-  it('should reject an item whose identifier fields have the wrong type', () => {
-    expect(
-      matchRerankResponse(stdoutOf([childItem(candidates[0], { chunkIndex: '0' })]), candidates, 1)
-        .ok
-    ).toBe(false)
-    expect(
-      matchRerankResponse(stdoutOf([childItem(candidates[0], { filePath: 7 })]), candidates, 1).ok
-    ).toBe(false)
-    expect(matchRerankResponse(stdoutOf(['just a string']), candidates, 1).ok).toBe(false)
-    expect(matchRerankResponse(stdoutOf([null]), candidates, 1).ok).toBe(false)
-  })
-
-  it('should carry neither document text nor candidate paths in its rejection reason', () => {
-    const result = matchRerankResponse(
-      stdoutOf([childItem(candidates[0]), childItem(candidates[0]), childItem(candidates[1])]),
-      candidates,
-      3
-    )
-
-    expect(result.ok).toBe(false)
-    const reason = result.ok ? '' : result.reason
-    expect(reason.length).toBeGreaterThan(0)
-    for (const item of candidates) {
-      expect(reason).not.toContain(item.text)
-      expect(reason).not.toContain(item.filePath)
+    expect(match.ok).toBe(false)
+    if (!match.ok) {
+      expect(match.reason).not.toContain('bearer token flow')
+      expect(match.reason).not.toContain('/docs/auth.md')
     }
   })
 })

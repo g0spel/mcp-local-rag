@@ -253,7 +253,7 @@ describe('handleQueryDocuments with a reranker configured', () => {
     expect(rerankStderrLines()).toEqual([])
   })
 
-  it('spawns nothing and returns the candidate unchanged when fewer than two are found', async () => {
+  it('runs the command on a single candidate, which filtering still acts on', async () => {
     const markerPath = join(workDir, 'single-candidate-marker.txt')
     const server = makeServer({ rerankCommand: fixtureCommand(markerReranker(markerPath)) })
     const candidates = [searchResult(0)]
@@ -261,9 +261,39 @@ describe('handleQueryDocuments with a reranker configured', () => {
 
     const response = await server.handleQueryDocuments({ query: 'chunks', limit: 5 })
 
-    expect(identities(resultsOf(response.content))).toEqual(identities(candidates))
-    expect(existsSync(markerPath)).toBe(false)
+    // The fixture answers with an empty set, which is the command's decision.
+    expect(resultsOf(response.content)).toEqual([])
+    expect(existsSync(markerPath)).toBe(true)
     expect(rerankStderrLines()).toEqual([])
+  })
+
+  it('takes an empty result set from the command as its answer', async () => {
+    const server = makeServer({
+      rerankCommand: fixtureCommand(`process.stdout.write('[]')`),
+    })
+    stubSearch(server, [0, 1, 2].map(searchResult))
+
+    const response = await server.handleQueryDocuments({ query: 'chunks', limit: 5 })
+
+    expect(resultsOf(response.content)).toEqual([])
+    expect(rerankStderrLines()).toEqual([])
+  })
+
+  it('keeps a property the command added and text it rewrote', async () => {
+    const server = makeServer({
+      rerankCommand: fixtureCommand(`
+import { readFileSync } from 'node:fs'
+const items = JSON.parse(readFileSync(0, 'utf8'))
+process.stdout.write(JSON.stringify([{ ...items[0], text: 'rewritten', rerankScore: 0.91 }]))
+`),
+    })
+    stubSearch(server, [0, 1].map(searchResult))
+
+    const response = await server.handleQueryDocuments({ query: 'chunks', limit: 5 })
+    const results = resultsOf(response.content)
+
+    expect(results).toHaveLength(1)
+    expect(results[0]).toMatchObject({ text: 'rewritten', rerankScore: 0.91 })
   })
 
   it.each([
@@ -353,12 +383,13 @@ describe('handleQueryDocuments with a reranker configured', () => {
         expectDefined(candidates[1]),
       ])
     )
-    // Hydration runs on the trimmed set, so no image bytes are read for a
-    // candidate the rerank step dropped.
+    // Hydration runs before the command, so every candidate is hydrated: the
+    // command is handed complete results and decides what to keep.
     expect(expectDefined(hydrationSpy.mock.calls[0])[0].map((row) => row.id)).toEqual([
-      'row-3',
-      'row-2',
+      'row-0',
       'row-1',
+      'row-2',
+      'row-3',
     ])
     // Blocks after the results text: one attachment description and one image
     // per result, in result order.
@@ -400,39 +431,31 @@ describe('handleQueryDocuments when the rerank child breaks its contract', () =>
       command: () => fixtureCommand(`process.stdout.write('{"ranked":[]}')`),
     },
     {
-      name: 'an item names a chunk that was never sent',
+      name: 'an item is missing a property the schema requires',
       command: () =>
         fixtureCommand(`
 import { readFileSync } from 'node:fs'
 const items = JSON.parse(readFileSync(0, 'utf8'))
-process.stdout.write(JSON.stringify([{ ...items[0], chunkIndex: 987 }, items[1]]))
+const { text, ...rest } = items[0]
+process.stdout.write(JSON.stringify([rest]))
 `),
     },
     {
-      name: 'an identifier is repeated',
+      name: 'an item has a property of the wrong type',
       command: () =>
         fixtureCommand(`
 import { readFileSync } from 'node:fs'
 const items = JSON.parse(readFileSync(0, 'utf8'))
-process.stdout.write(JSON.stringify([items[0], items[0]]))
+process.stdout.write(JSON.stringify([{ ...items[0], chunkIndex: 'first' }]))
 `),
     },
     {
-      name: 'a candidate is dropped',
+      name: 'an attachment declares an unsupported mimeType',
       command: () =>
         fixtureCommand(`
 import { readFileSync } from 'node:fs'
 const items = JSON.parse(readFileSync(0, 'utf8'))
-process.stdout.write(JSON.stringify([items[0]]))
-`),
-    },
-    {
-      name: 'an extra item is returned',
-      command: () =>
-        fixtureCommand(`
-import { readFileSync } from 'node:fs'
-const items = JSON.parse(readFileSync(0, 'utf8'))
-process.stdout.write(JSON.stringify([...items, items[0]]))
+process.stdout.write(JSON.stringify([{ ...items[0], images: [{ imageIndex: 0, mimeType: 'image/gif', data: 'x' }] }]))
 `),
     },
   ]

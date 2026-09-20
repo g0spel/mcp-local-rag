@@ -307,12 +307,14 @@ CLI 不读取 MCP 客户端配置。如果两个接口需要共用索引，请�
 
 ```json
 "env": {
-  "RAG_RERANK_CMD": "/path/to/reranker --score-field score",
+  "RAG_RERANK_CMD": "/path/to/reranker",
   "RAG_RERANK_TIMEOUT_MS": "10000"
 }
 ```
 
-命令失败、超时，或返回的内容无法与服务器自身的结果对应时，结果保持原有顺序。
+该命令收到的每条结果都是 [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) 中公开的形式，并且必须以同样的形式返回。在此范围内，保留哪些、如何排序、正文写什么都由命令决定，返回的内容会直接呈现给你。
+
+命令失败、超时，或返回的内容不符合该形式时，结果保持原有顺序。
 
 ## 工作原理
 

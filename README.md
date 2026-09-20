@@ -389,13 +389,18 @@ runs it without a shell, so an npm-installed `.cmd` shim on Windows will not sta
 
 ```json
 "env": {
-  "RAG_RERANK_CMD": "/path/to/reranker --score-field score",
+  "RAG_RERANK_CMD": "/path/to/reranker",
   "RAG_RERANK_TIMEOUT_MS": "10000"
 }
 ```
 
-Results keep their original order if the command fails, times out, or returns anything the server
-cannot match back to its own results.
+The command receives each result in the form published at
+[`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) and has to answer
+in that same form. Within it the command decides everything: what to keep, how to order it, and
+what the text says. Whatever it returns is what you see.
+
+Results keep their original order if the command fails, times out, or answers with something that
+is not that form.
 
 ## How It Works
 

@@ -307,12 +307,14 @@ Gib den Befehl und seine Argumente durch Leerzeichen getrennt an. Es muss eine a
 
 ```json
 "env": {
-  "RAG_RERANK_CMD": "/path/to/reranker --score-field score",
+  "RAG_RERANK_CMD": "/path/to/reranker",
   "RAG_RERANK_TIMEOUT_MS": "10000"
 }
 ```
 
-Schlägt der Befehl fehl, läuft er in die Zeitgrenze oder liefert er etwas, das der Server seinen eigenen Treffern nicht zuordnen kann, bleibt die ursprüngliche Reihenfolge erhalten.
+Der Befehl erhält jeden Treffer in der unter [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) veröffentlichten Form und muss in derselben Form antworten. Darin entscheidet er alles: was er behält, wie er es ordnet und was im Text steht. Was er zurückgibt, bekommst du zu sehen.
+
+Schlägt der Befehl fehl, läuft er in die Zeitgrenze oder antwortet er mit etwas, das diese Form nicht hat, bleibt die ursprüngliche Reihenfolge erhalten.
 
 ## Funktionsweise
 
