@@ -14,7 +14,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'query_documents',
     description:
-      'Search ingested documents with hybrid keyword + semantic matching. Returns results sorted by relevance, each with filePath, chunkIndex, text, fileTitle, score (0 = best, higher = worse), and source (for ingest_data items).',
+      'Search ingested documents with hybrid keyword + semantic matching. Use the returned order as the ranking; score may disagree with it. Each has filePath, chunkIndex, text, fileTitle, score (lower is closer), and source (for ingest_data items).',
     inputSchema: {
       type: 'object',
       properties: {
