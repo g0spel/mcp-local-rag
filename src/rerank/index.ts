@@ -66,7 +66,6 @@ function runRerankCommand(
 ): Promise<ChildRun> {
   return new Promise<ChildRun>((resolve) => {
     let settled = false
-    let timedOut = false
     const stdoutChunks: string[] = []
     let timer: NodeJS.Timeout | undefined
 
@@ -91,9 +90,16 @@ function runRerankCommand(
       return
     }
 
+    // The budget itself ends the call. A child that traps the signal, or one
+    // whose descendant holds the inherited stdout open, never emits `close`, so
+    // waiting for the kill to land would leave the request pending for as long
+    // as the child felt like running. Its stdout is dropped and the handle is
+    // unreferenced so nothing it does afterwards reaches or holds this server.
     timer = setTimeout(() => {
-      timedOut = true
       child.kill()
+      child.stdout?.destroy()
+      child.unref()
+      finish({ ok: false, reason: `the command timed out after ${timeoutMs}ms and was killed` })
     }, timeoutMs)
 
     child.stdout?.setEncoding('utf8')
@@ -109,10 +115,6 @@ function runRerankCommand(
       finish({ ok: false, reason: spawnFailureReason(error) })
     })
     child.on('close', (code, signal): void => {
-      if (timedOut) {
-        finish({ ok: false, reason: `the command timed out after ${timeoutMs}ms and was killed` })
-        return
-      }
       if (code === 0) {
         finish({ ok: true, stdout: stdoutChunks.join('') })
         return

@@ -239,6 +239,29 @@ setTimeout(() => {
     expect(existsSync(markerPath)).toBe(false)
   })
 
+  it('should fall back within the budget when the child ignores the kill signal', async () => {
+    // A child that traps SIGTERM -- or one whose descendant holds the inherited
+    // stdout open -- never emits `close`, so waiting for the child to end after
+    // the kill would leave the request pending forever.
+    const command = fixtureCommand(`
+process.on('SIGTERM', () => {})
+setTimeout(() => {
+  process.stdout.write('[]')
+}, 3000)
+`)
+
+    const call = rerankCandidates({ candidates, query: 'cats', top: 3, command, timeoutMs: 200 })
+    const settledInBudget = await Promise.race([
+      call.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 1500)),
+    ])
+
+    expect(settledInBudget).toBe(true)
+    expect(await call).toEqual(candidates)
+    expect(stderrLines()).toHaveLength(1)
+    expect(stderrLines()[0]).toMatch(/timed out/)
+  })
+
   it('should return the pre-rerank ordering when stdout is not JSON', async () => {
     const command = fixtureCommand(`process.stdout.write('not json at all')`)
 
