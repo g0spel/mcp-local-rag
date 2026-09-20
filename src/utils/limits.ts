@@ -22,7 +22,7 @@ export const MAX_FILE_SIZE_LIMIT = 524_288_000
 
 /** Inclusive result-count range shared by CLI, MCP validation, and VectorStore. */
 export const MIN_QUERY_LIMIT = 1
-export const MAX_QUERY_LIMIT = 20
+export const MAX_QUERY_LIMIT = 100
 
 /** Maximum number of adjacent chunks accepted on either side of a target. */
 export const MAX_NEIGHBOR_COUNT = 50

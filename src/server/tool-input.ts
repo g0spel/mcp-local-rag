@@ -64,17 +64,20 @@ export function parseQueryDocumentsInput(raw: unknown): QueryDocumentsInput {
   const input: QueryDocumentsInput = { query }
 
   if (limit !== undefined) {
-    // Bound to 1-20 at the entry boundary — the same range VectorStore.search
-    // enforces and the CLI `--limit` accepts. Rejecting here returns a clean
-    // McpError(InvalidParams) instead of letting an out-of-range value reach
-    // search() and surface as a DatabaseError.
+    // Bound to the shared range at the entry boundary — the same range
+    // VectorStore.search enforces and the CLI `--limit` accepts. Rejecting
+    // here returns a clean McpError(InvalidParams) instead of letting an
+    // out-of-range value reach search() and surface as a DatabaseError.
     if (
       typeof limit !== 'number' ||
       !Number.isInteger(limit) ||
       limit < MIN_QUERY_LIMIT ||
       limit > MAX_QUERY_LIMIT
     ) {
-      throw new McpError(ErrorCode.InvalidParams, 'limit must be an integer between 1 and 20')
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `limit must be an integer between ${MIN_QUERY_LIMIT} and ${MAX_QUERY_LIMIT}`
+      )
     }
     input.limit = limit
   }
