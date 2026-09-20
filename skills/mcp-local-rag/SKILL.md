@@ -27,11 +27,11 @@ description: Searches, saves, and maintains a local document index through a loc
 
 ## Search: Core Rules
 
-Hybrid search combines vector (semantic) and keyword (BM25).
+Hybrid search combines vector (semantic) and keyword (BM25) by default.
 
 ### Score Interpretation
 
-Lower = better match.
+Lower = better match. The bands hold for the default embedding model and keyword weight; when either is configured differently, rank hits against the others in the same response instead.
 
 | Score | Action |
 |-------|--------|
@@ -68,7 +68,7 @@ Prefixes must be absolute, in the server's OS path style — relative prefixes m
 
 The BM25 half matches literally, so carry the user's exact identifiers, error strings, and API names into the query rather than paraphrasing them. The vector half needs enough words to have a topic, so a bare term gains from surrounding context.
 
-When results are few or all score above 0.5, add 2-4 variants after the original term. More than that drifts off topic.
+When the results do not carry enough evidence to answer the question, add 2-4 variants after the original term. More than that drifts off topic.
 
 ### fileTitle
 

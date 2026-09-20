@@ -277,7 +277,7 @@ La CLI ne lit pas la configuration du client MCP. Définissez les mêmes variabl
 
 ## Réglage de la recherche
 
-Le renforcement par mots-clés est activé par défaut. Pour les corpus qui nécessitent une sélection plus stricte, vous pouvez aussi configurer le regroupement par écarts de pertinence ainsi que les filtres de distance et de fichiers.
+Le renforcement par mots-clés est activé par défaut. Pour les corpus qui nécessitent une sélection plus stricte, vous pouvez aussi configurer le regroupement par écarts de pertinence ainsi que les filtres de distance et de fichiers. Les quatre s'appliquent aussi bien au serveur MCP qu'à `query` dans la CLI.
 
 | Variable | Valeur par défaut | Description |
 |----------|---------|-------------|

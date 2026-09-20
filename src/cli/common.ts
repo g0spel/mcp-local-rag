@@ -35,10 +35,23 @@ export function formatCliError(error: unknown): string {
  * Callers are responsible for calling initialize() before use.
  */
 export function createVectorStore(config: ResolvedGlobalConfig): VectorStore {
-  return new VectorStore({
+  const storeConfig: ConstructorParameters<typeof VectorStore>[0] = {
     dbPath: config.dbPath,
     tableName: 'chunks',
-  })
+  }
+  if (config.maxDistance !== undefined) {
+    storeConfig.maxDistance = config.maxDistance
+  }
+  if (config.grouping !== undefined) {
+    storeConfig.grouping = config.grouping
+  }
+  if (config.maxFiles !== undefined) {
+    storeConfig.maxFiles = config.maxFiles
+  }
+  if (config.hybridWeight !== undefined) {
+    storeConfig.hybridWeight = config.hybridWeight
+  }
+  return new VectorStore(storeConfig)
 }
 
 /**

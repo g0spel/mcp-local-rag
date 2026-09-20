@@ -354,7 +354,8 @@ another tool. The field-by-field contract is in
 ## Search Tuning
 
 Keyword boost is enabled by default. Relevance-gap grouping and the distance and file filters are
-optional controls for corpora that need tighter result selection.
+optional controls for corpora that need tighter result selection. All four apply to the MCP
+server and to CLI `query` alike.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
