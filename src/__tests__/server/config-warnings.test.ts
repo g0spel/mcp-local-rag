@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  parseChunkMinLength,
   parseGroupingMode,
   parseHybridWeight,
   parseMaxDistance,
   parseMaxFiles,
-  resolveServerConfig,
-} from '../../server-main.js'
+} from '../../cli/options.js'
+import { parseChunkMinLength, resolveServerConfig } from '../../server-main.js'
 
 // ============================================
 // Unit Tests: Parser Functions

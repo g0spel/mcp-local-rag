@@ -277,7 +277,7 @@ Die CLI liest keine MCP-Client-Konfiguration. Wenn beide Schnittstellen denselbe
 
 ## Suchparameter anpassen
 
-Die Stichwortgewichtung ist standardmäßig aktiv. Für Korpora, die eine strengere Auswahl erfordern, stehen außerdem die Gruppierung anhand von Relevanzsprüngen sowie Distanz- und Dateifilter zur Verfügung.
+Die Stichwortgewichtung ist standardmäßig aktiv. Für Korpora, die eine strengere Auswahl erfordern, stehen außerdem die Gruppierung anhand von Relevanzsprüngen sowie Distanz- und Dateifilter zur Verfügung. Alle vier gelten für den MCP-Server und für `query` in der CLI gleichermaßen.
 
 | Variable | Standard | Beschreibung |
 |----------|---------|-------------|

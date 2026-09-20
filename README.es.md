@@ -277,7 +277,7 @@ La CLI no lee la configuración del cliente MCP. Configura las mismas variables 
 
 ## Ajuste de la búsqueda
 
-El refuerzo de palabras clave está activado de forma predeterminada. Para corpus que necesiten una selección más estricta, también se pueden configurar la agrupación por saltos de relevancia y los filtros de distancia y de archivos.
+El refuerzo de palabras clave está activado de forma predeterminada. Para corpus que necesiten una selección más estricta, también se pueden configurar la agrupación por saltos de relevancia y los filtros de distancia y de archivos. Las cuatro se aplican por igual al servidor MCP y a `query` en la CLI.
 
 | Variable | Valor predeterminado | Descripción |
 |----------|---------|-------------|

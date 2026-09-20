@@ -277,7 +277,7 @@ A CLI não lê a configuração do cliente MCP. Defina as mesmas variáveis de a
 
 ## Ajuste da busca
 
-O reforço por palavras-chave é ativado por padrão. Para acervos que exigem uma seleção mais restrita, também é possível configurar o agrupamento por saltos de relevância e os filtros de distância e de arquivos.
+O reforço por palavras-chave é ativado por padrão. Para acervos que exigem uma seleção mais restrita, também é possível configurar o agrupamento por saltos de relevância e os filtros de distância e de arquivos. As quatro valem tanto para o servidor MCP quanto para `query` na CLI.
 
 | Variável | Padrão | Descrição |
 |----------|---------|-------------|

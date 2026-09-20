@@ -1,80 +1,21 @@
 // MCP Server entry point
-import { resolveDevice, resolveDtype } from './cli/options.js'
+import {
+  type ParseResult,
+  parseGroupingMode,
+  parseHybridWeight,
+  parseMaxDistance,
+  parseMaxFiles,
+  resolveDevice,
+  resolveDtype,
+} from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import { BaseDirsConfigError, parseBaseDirsEnv, resolveBaseDirs } from './utils/base-dirs.js'
 import { DEFAULT_MAX_FILE_SIZE, MAX_CHUNK_MIN_LENGTH, MAX_FILE_SIZE_LIMIT } from './utils/limits.js'
 import { checkSensitivePath } from './utils/sensitive-path.js'
-import type { GroupingMode } from './vectordb/index.js'
 
 // ============================================
 // Environment Variable Parsers
 // ============================================
-
-/** Result of parsing an environment variable */
-export interface ParseResult<T> {
-  value: T | undefined
-  warning?: string
-}
-
-/**
- * Parse grouping mode from environment variable
- */
-export function parseGroupingMode(value: string | undefined): ParseResult<GroupingMode> {
-  if (!value) {
-    return { value: undefined }
-  }
-  const normalized = value.toLowerCase().trim()
-  if (normalized === 'similar' || normalized === 'related') {
-    return { value: normalized }
-  }
-  const warning = `Invalid RAG_GROUPING value: "${value.slice(0, 100)}". Expected "similar" or "related". Ignoring.`
-  return { value: undefined, warning }
-}
-
-/**
- * Parse max distance from environment variable
- */
-export function parseMaxDistance(value: string | undefined): ParseResult<number> {
-  if (!value) {
-    return { value: undefined }
-  }
-  const parsed = Number.parseFloat(value)
-  if (Number.isNaN(parsed) || parsed <= 0 || !Number.isFinite(parsed)) {
-    const warning = `Invalid RAG_MAX_DISTANCE value: "${value.slice(0, 100)}". Expected positive number. Ignoring.`
-    return { value: undefined, warning }
-  }
-  return { value: parsed }
-}
-
-/**
- * Parse max files from environment variable
- */
-export function parseMaxFiles(value: string | undefined): ParseResult<number> {
-  if (!value) {
-    return { value: undefined }
-  }
-  const parsed = Number.parseInt(value, 10)
-  if (Number.isNaN(parsed) || parsed < 1) {
-    const warning = `Invalid RAG_MAX_FILES value: "${value.slice(0, 100)}". Expected positive integer (>= 1). Ignoring.`
-    return { value: undefined, warning }
-  }
-  return { value: parsed }
-}
-
-/**
- * Parse hybrid weight from environment variable
- */
-export function parseHybridWeight(value: string | undefined): ParseResult<number> {
-  if (!value) {
-    return { value: undefined }
-  }
-  const parsed = Number.parseFloat(value)
-  if (Number.isNaN(parsed) || parsed < 0 || parsed > 1) {
-    const warning = `Invalid RAG_HYBRID_WEIGHT value: "${value.slice(0, 100)}". Expected 0.0-1.0. Using default (0.6).`
-    return { value: undefined, warning }
-  }
-  return { value: parsed }
-}
 
 /**
  * Parse chunk minimum length from environment variable

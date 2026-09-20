@@ -32,6 +32,7 @@ const MOCKED_PATHS = ['../../vectordb/index.js', '../../embedder/index.js'] as c
 // ============================================
 
 let createEmbedder: typeof import('../../cli/common.js').createEmbedder
+let createVectorStore: typeof import('../../cli/common.js').createVectorStore
 let formatCliError: typeof import('../../cli/common.js').formatCliError
 type ResolvedGlobalConfig = import('../../cli/options.js').ResolvedGlobalConfig
 
@@ -59,7 +60,7 @@ describe('cli/common', () => {
     vi.doMock('../../embedder/index.js', embedderFactory)
     // The vectordb mock stays installed so importing cli/common.js does not pull
     // in the real LanceDB module under `isolate: false`.
-    ;({ createEmbedder, formatCliError } = await import('../../cli/common.js'))
+    ;({ createEmbedder, createVectorStore, formatCliError } = await import('../../cli/common.js'))
   })
 
   afterAll(() => {
@@ -113,6 +114,43 @@ describe('cli/common', () => {
 
       expect(rendered).toContain('plain string failure')
       expect(rendered).not.toContain('Caused by: ')
+    })
+  })
+
+  describe('createVectorStore', () => {
+    afterEach(() => {
+      mocks.VectorStore.mockReset()
+    })
+
+    it('passes only dbPath and tableName when no search tuning is configured', () => {
+      createVectorStore(makeConfig({ dbPath: '/custom/db' }))
+
+      expect(mocks.VectorStore).toHaveBeenCalledWith({
+        dbPath: '/custom/db',
+        tableName: 'chunks',
+      })
+    })
+
+    it('forwards each configured search-tuning value to the VectorStore', () => {
+      createVectorStore(
+        makeConfig({ maxDistance: 0.5, grouping: 'similar', maxFiles: 2, hybridWeight: 0 })
+      )
+
+      expect(mocks.VectorStore).toHaveBeenCalledWith({
+        dbPath: './test-db/',
+        tableName: 'chunks',
+        maxDistance: 0.5,
+        grouping: 'similar',
+        maxFiles: 2,
+        hybridWeight: 0,
+      })
+    })
+
+    it('forwards hybridWeight 0, which disables the keyword boost', () => {
+      createVectorStore(makeConfig({ hybridWeight: 0 }))
+
+      const [storeConfig] = mocks.VectorStore.mock.calls[0] ?? []
+      expect(storeConfig).toHaveProperty('hybridWeight', 0)
     })
   })
 

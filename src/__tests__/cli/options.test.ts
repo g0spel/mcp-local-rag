@@ -282,6 +282,47 @@ describe('CLI global options', () => {
       delete process.env['DB_PATH']
       delete process.env['CACHE_DIR']
       delete process.env['MODEL_NAME']
+      delete process.env['RAG_MAX_DISTANCE']
+      delete process.env['RAG_GROUPING']
+      delete process.env['RAG_MAX_FILES']
+      delete process.env['RAG_HYBRID_WEIGHT']
+    })
+
+    it('omits every search-tuning key when the variables are unset', () => {
+      const config = resolveGlobalConfig({})
+      expect(Object.keys(config).sort()).toEqual(['cacheDir', 'dbPath', 'modelName'])
+    })
+
+    it('reads the same search-tuning variables the MCP server reads', () => {
+      process.env['RAG_MAX_DISTANCE'] = '0.5'
+      process.env['RAG_GROUPING'] = 'related'
+      process.env['RAG_MAX_FILES'] = '3'
+      process.env['RAG_HYBRID_WEIGHT'] = '0'
+
+      expect(resolveGlobalConfig({})).toEqual({
+        dbPath: './lancedb/',
+        cacheDir: './models/',
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        maxDistance: 0.5,
+        grouping: 'related',
+        maxFiles: 3,
+        hybridWeight: 0,
+      })
+    })
+
+    it('warns on stderr and omits the key when a search-tuning value is invalid', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      process.env['RAG_HYBRID_WEIGHT'] = '7'
+      process.env['RAG_GROUPING'] = 'sideways'
+
+      const config = resolveGlobalConfig({})
+
+      expect(config).not.toHaveProperty('hybridWeight')
+      expect(config).not.toHaveProperty('grouping')
+      const written = errorSpy.mock.calls.map((call) => String(call[0])).join('\n')
+      expect(written).toContain('RAG_HYBRID_WEIGHT')
+      expect(written).toContain('RAG_GROUPING')
+      errorSpy.mockRestore()
     })
 
     it('should use defaults when no options or env vars', () => {
