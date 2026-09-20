@@ -10,7 +10,14 @@ import {
 } from './cli/options.js'
 import { RAGServer } from './server/index.js'
 import { BaseDirsConfigError, parseBaseDirsEnv, resolveBaseDirs } from './utils/base-dirs.js'
-import { DEFAULT_MAX_FILE_SIZE, MAX_CHUNK_MIN_LENGTH, MAX_FILE_SIZE_LIMIT } from './utils/limits.js'
+import {
+  DEFAULT_MAX_FILE_SIZE,
+  DEFAULT_RERANK_TIMEOUT_MS,
+  MAX_CHUNK_MIN_LENGTH,
+  MAX_FILE_SIZE_LIMIT,
+  RERANK_TIMEOUT_MAX_MS,
+  RERANK_TIMEOUT_MIN_MS,
+} from './utils/limits.js'
 import { checkSensitivePath } from './utils/sensitive-path.js'
 
 // ============================================
@@ -48,6 +55,39 @@ export function parseStoreImages(value: string | undefined): ParseResult<boolean
     value: false,
     warning: `Invalid STORE_IMAGES value: "${value?.slice(0, 100)}". Expected one of 1, true, yes, on, 0, false, no, or off. Using false.`,
   }
+}
+
+/**
+ * Parse the rerank command. Unset, or set to whitespace only, leaves reranking
+ * disabled; the string is otherwise kept verbatim because `src/rerank` splits
+ * it into argv itself.
+ */
+export function parseRerankCmd(value: string | undefined): ParseResult<string> {
+  const trimmed = value?.trim() ?? ''
+  return trimmed.length === 0 ? { value: undefined } : { value: trimmed }
+}
+
+/**
+ * Parse the rerank timeout, falling back to the default rather than to "no
+ * timeout". `Number` rather than `Number.parseInt`, so a fractional value is
+ * rejected instead of silently truncated.
+ */
+export function parseRerankTimeoutMs(value: string | undefined): ParseResult<number> {
+  if (!value) {
+    return { value: DEFAULT_RERANK_TIMEOUT_MS }
+  }
+  const parsed = Number(value)
+  if (
+    !Number.isInteger(parsed) ||
+    parsed < RERANK_TIMEOUT_MIN_MS ||
+    parsed > RERANK_TIMEOUT_MAX_MS
+  ) {
+    return {
+      value: DEFAULT_RERANK_TIMEOUT_MS,
+      warning: `Invalid RAG_RERANK_TIMEOUT_MS value: "${value.slice(0, 100)}". Expected integer between ${RERANK_TIMEOUT_MIN_MS} and ${RERANK_TIMEOUT_MAX_MS}. Using default (${DEFAULT_RERANK_TIMEOUT_MS}).`,
+    }
+  }
+  return { value: parsed }
 }
 
 // ============================================
@@ -156,6 +196,8 @@ function applyOptionalSettings(config: ServerConfig, env: NodeJS.ProcessEnv): st
   const hybridWeight = parseHybridWeight(env['RAG_HYBRID_WEIGHT'])
   const chunkMinLength = parseChunkMinLength(env['CHUNK_MIN_LENGTH'])
   const storeImages = parseStoreImages(env['STORE_IMAGES'])
+  const rerankCommand = parseRerankCmd(env['RAG_RERANK_CMD'])
+  const rerankTimeoutMs = parseRerankTimeoutMs(env['RAG_RERANK_TIMEOUT_MS'])
 
   if (maxDistance.value !== undefined) {
     config.maxDistance = maxDistance.value
@@ -172,9 +214,22 @@ function applyOptionalSettings(config: ServerConfig, env: NodeJS.ProcessEnv): st
   if (chunkMinLength.value !== undefined) {
     config.chunkMinLength = chunkMinLength.value
   }
+  if (rerankCommand.value !== undefined) {
+    config.rerankCommand = rerankCommand.value
+  }
   config.storeImages = storeImages.value ?? false
+  config.rerankTimeoutMs = rerankTimeoutMs.value ?? DEFAULT_RERANK_TIMEOUT_MS
 
-  return [maxDistance, grouping, maxFiles, hybridWeight, chunkMinLength, storeImages]
+  return [
+    maxDistance,
+    grouping,
+    maxFiles,
+    hybridWeight,
+    chunkMinLength,
+    storeImages,
+    rerankCommand,
+    rerankTimeoutMs,
+  ]
     .map((parsed) => parsed.warning)
     .filter((warning): warning is string => warning !== undefined)
 }

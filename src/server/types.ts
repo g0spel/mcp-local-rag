@@ -35,6 +35,10 @@ interface RAGServerConfigBase {
   chunkMinLength?: number
   /** Store bounded PDF regions and Mammoth-produced DOCX images. */
   storeImages?: boolean
+  /** External reranker command, as configured. Unset disables reranking. */
+  rerankCommand?: string
+  /** Per-rerank-call budget in milliseconds (default: 10000). */
+  rerankTimeoutMs?: number
   /**
    * Normal-path roots, index-aligned with the realpath'd `baseDirs` boundary,
    * used for user-facing scan and display so paths match the stored DB keys.

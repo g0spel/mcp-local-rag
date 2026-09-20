@@ -37,9 +37,15 @@ import {
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, ValidationError } from '../parser/index.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
+import { type RerankResult, rerankCandidates } from '../rerank/index.js'
 import { type BaseDirsConfigError, displayPath } from '../utils/base-dirs.js'
 import { toError } from '../utils/errors.js'
-import { MAX_SCAN_DEPTH } from '../utils/limits.js'
+import {
+  DEFAULT_RERANK_TIMEOUT_MS,
+  MAX_QUERY_LIMIT,
+  MAX_SCAN_DEPTH,
+  RERANK_CANDIDATE_MULTIPLIER,
+} from '../utils/limits.js'
 import {
   checkRawDataArtifacts,
   extractSourceFromPath,
@@ -60,7 +66,7 @@ import {
 } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
 import { isRecord } from '../utils/type-guards.js'
-import { type VectorChunk, VectorStore } from '../vectordb/index.js'
+import { type VectorChunk, VectorStore, type VisualAttachment } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
 import {
   appendConfigWarnings,
@@ -94,7 +100,6 @@ import type {
   ListFilesInput,
   ListFilesResult,
   QueryDocumentsInput,
-  QueryResult,
   RAGServerConfig,
   ReadChunkNeighborsResultItem,
   SourceEntry,
@@ -262,6 +267,9 @@ export class RAGServer {
   private readonly maxFileSize: number
   private readonly device: string | undefined
   private readonly storeImages: boolean
+  /** Configured reranker command. Undefined leaves query_documents unchanged. */
+  private readonly rerankCommand: string | undefined
+  private readonly rerankTimeoutMs: number
   /**
    * The one current-or-latest sync job this process retains. A new `sync_start`
    * replaces a terminal record, so the older id becomes unknown; there is no
@@ -294,6 +302,8 @@ export class RAGServer {
     this.maxFileSize = config.maxFileSize
     this.device = config.device
     this.storeImages = config.storeImages ?? false
+    this.rerankCommand = config.rerankCommand
+    this.rerankTimeoutMs = config.rerankTimeoutMs ?? DEFAULT_RERANK_TIMEOUT_MS
     this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
     this.server = new Server(
       { name: 'rag-mcp-server', version: packageVersion },
@@ -475,44 +485,52 @@ export class RAGServer {
   /**
    * query_documents tool handler
    */
+  /** Hands the finished results to the configured command and takes its answer. */
+  private async applyReranker(
+    results: RerankResult[],
+    query: string,
+    limit: number
+  ): Promise<RerankResult[]> {
+    if (this.rerankCommand === undefined) {
+      return results
+    }
+    return rerankCandidates({
+      candidates: results,
+      query,
+      top: limit,
+      command: this.rerankCommand,
+      timeoutMs: this.rerankTimeoutMs,
+    })
+  }
+
   async handleQueryDocuments(args: QueryDocumentsInput): Promise<{ content: QueryContent }> {
     // query_documents reads only LanceDB, so it stays callable in degraded
     // mode; `withWarnings` and `status` remain the diagnostic surface.
     const queryVector = await this.embedder.embed(args.query)
 
+    // A reranker only improves on what the search returned, so it is given more
+    // candidates than the caller asked for. `search` applies every filter and
+    // caps at `limit`, so the expansion has to be requested up front.
+    const limit = args.limit ?? 10
+    const candidateLimit =
+      this.rerankCommand === undefined
+        ? limit
+        : Math.min(limit * RERANK_CANDIDATE_MULTIPLIER, MAX_QUERY_LIMIT)
+
     // `args.scope` is parser-validated; array-wrap without re-validating, and
     // omit the key when absent (exactOptionalPropertyTypes) to keep the scope-absent path.
-    const searchResults = await this.vectorStore.search(queryVector, {
+    const candidates = await this.vectorStore.search(queryVector, {
       queryText: args.query,
-      limit: args.limit ?? 10,
+      limit: candidateLimit,
       ...(args.scope !== undefined ? { scope: toArray(args.scope) } : {}),
     })
 
-    // Format results with source restoration for raw-data files
-    const results: QueryResult[] = searchResults.map((result) => {
-      const queryResult: QueryResult = {
-        filePath: result.filePath,
-        chunkIndex: result.chunkIndex,
-        text: result.text,
-        score: result.score,
-        fileTitle: result.fileTitle ?? null,
-      }
-
-      if (isManagedRawDataPath(result.filePath, this.dbPath)) {
-        const source = extractSourceFromPath(result.filePath)
-        if (source) {
-          queryResult.source = source
-        }
-      }
-
-      return queryResult
-    })
-
-    let hydratedRows: Awaited<ReturnType<VectorStore['hydrateVisualAttachments']>>['rows'] = []
+    // Hydrated before the command runs, so its answer needs no identity lookup.
     let attachmentWarning: RagContentBlock | null = null
+    let attachmentsById = new Map<string, VisualAttachment[]>()
     try {
-      const hydration = await this.vectorStore.hydrateVisualAttachments(searchResults)
-      hydratedRows = hydration.rows
+      const hydration = await this.vectorStore.hydrateVisualAttachments(candidates)
+      attachmentsById = new Map(hydration.rows.map((row) => [row.id, row.attachments]))
       if (hydration.omittedCount > 0) {
         attachmentWarning = attachmentOmissionWarning(hydration.omittedCount)
       }
@@ -520,16 +538,47 @@ export class RAGServer {
       attachmentWarning = attachmentHydrationFailureWarning()
     }
 
+    // Format results with source restoration for raw-data files
+    const retrieved: RerankResult[] = candidates.map((candidate) => {
+      const result: RerankResult = {
+        filePath: candidate.filePath,
+        chunkIndex: candidate.chunkIndex,
+        text: candidate.text,
+        score: candidate.score,
+        fileTitle: candidate.fileTitle ?? null,
+        images: attachmentsById.get(candidate.id) ?? [],
+      }
+
+      if (isManagedRawDataPath(candidate.filePath, this.dbPath)) {
+        const source = extractSourceFromPath(candidate.filePath)
+        if (source) {
+          result.source = source
+        }
+      }
+
+      return result
+    })
+
+    // `search` already applied the limit, so only the expanded set is trimmed.
+    const results =
+      this.rerankCommand === undefined
+        ? retrieved
+        : (await this.applyReranker(retrieved, args.query, limit)).slice(0, limit)
+
     const content: QueryContent = [
       {
         type: 'text',
-        text: JSON.stringify(results, null, 2),
+        // Attachments go out as image blocks below, never inside this JSON.
+        text: JSON.stringify(
+          results.map(({ images: _images, ...rest }) => rest),
+          null,
+          2
+        ),
       },
     ]
 
-    const attachmentsByIdentity = new Map(hydratedRows.map((row) => [row.id, row.attachments]))
-    for (const [resultIndex, result] of results.entries()) {
-      const attachments = attachmentsByIdentity.get(searchResults[resultIndex]?.id ?? '') ?? []
+    for (const result of results) {
+      const attachments = result.images
       for (const attachment of attachments) {
         content.push({
           type: 'text',

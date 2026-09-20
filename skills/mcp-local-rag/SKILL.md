@@ -31,7 +31,7 @@ Hybrid search combines vector (semantic) and keyword (BM25) by default.
 
 ### Score Interpretation
 
-Lower = better match. The bands hold for the default embedding model and keyword weight; when either is configured differently, rank hits against the others in the same response instead.
+Lower = better match, but the array order is the ranking: with an external reranker configured the first result can carry a worse score than one below it. The bands hold for the default embedding model and keyword weight; under a different configuration, judge each hit against the others in the same response.
 
 | Score | Action |
 |-------|--------|

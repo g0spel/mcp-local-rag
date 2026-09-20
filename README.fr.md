@@ -285,6 +285,8 @@ Le renforcement par mots-clés est activé par défaut. Pour les corpus qui néc
 | `RAG_GROUPING` | non définie | `similar` conserve le premier groupe de pertinence ; `related` en conserve jusqu'à deux et utilise les écarts importants de distance vectorielle comme limites. |
 | `RAG_MAX_DISTANCE` | non définie | Écarte les résultats peu pertinents, par exemple avec `0.5`. |
 | `RAG_MAX_FILES` | non définie | Limite les résultats aux N fichiers les mieux classés, par exemple `1` pour le meilleur fichier uniquement. |
+| `RAG_RERANK_CMD` | non définie | Serveur MCP uniquement : commande externe qui reclasse les résultats. Votre requête et le texte trouvé lui sont transmis. |
+| `RAG_RERANK_TIMEOUT_MS` | `10000` | Délai maximal par reclassement, en millisecondes (100–600000). |
 
 Pour les spécifications d'API et les autres documents comportant de nombreux identifiants, un poids plus élevé des mots-clés peut améliorer le classement des termes exacts :
 
@@ -296,6 +298,23 @@ Pour les spécifications d'API et les autres documents comportant de nombreux id
 
 - `0.7` : reclassement des termes exacts légèrement plus fort que la valeur par défaut
 - `1.0` : renforcement maximal des mots-clés
+
+### Reclassement externe (`RAG_RERANK_CMD`)
+
+Indiquez ici une commande et le serveur lui confie chaque liste de résultats à reclasser, avec votre requête et le texte des passages trouvés. Une commande qui appelle un service distant envoie tout cela hors de cette machine.
+
+Donnez la commande et ses arguments séparés par des espaces. Ce doit être un exécutable : le serveur le lance sans shell, si bien qu'un script `.cmd` installé par npm ne démarre pas sous Windows.
+
+```json
+"env": {
+  "RAG_RERANK_CMD": "/path/to/reranker",
+  "RAG_RERANK_TIMEOUT_MS": "10000"
+}
+```
+
+La commande reçoit chaque résultat dans la forme publiée à [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) et doit répondre dans cette même forme. À l'intérieur, elle décide de tout : ce qu'elle garde, comment elle l'ordonne et ce que dit le texte. Ce qu'elle renvoie est ce que vous voyez.
+
+Les résultats conservent leur ordre d'origine si la commande échoue, dépasse le délai ou répond avec autre chose que cette forme.
 
 ## Fonctionnement
 
@@ -382,7 +401,7 @@ Un exemple de modèle disponible pour les documents en français est `sentence-t
 
 - L'accès aux fichiers est limité aux racines définies par `BASE_DIR`, `BASE_DIRS` ou l'option CLI `--base-dir`.
 - Les liens symboliques qui pointent hors de toutes les racines configurées sont refusés.
-- Le traitement des documents et la recherche n'effectuent plus de requêtes réseau une fois les modèles nécessaires en cache.
+- Le traitement des documents et la recherche n'effectuent plus de requêtes réseau une fois les modèles nécessaires en cache, sauf si `RAG_RERANK_CMD` désigne une commande qui en effectue.
 - Le serveur est conçu pour un seul utilisateur local et ne fournit ni authentification ni contrôle d'accès.
 - Ne lancez pas plusieurs processus d'écriture CLI ou MCP sur le même `DB_PATH`. Les requêtes en lecture seule restent possibles pendant une synchronisation.
 - Pour sauvegarder un index, copiez le répertoire `DB_PATH` lorsqu'aucun processus d'écriture n'est actif.

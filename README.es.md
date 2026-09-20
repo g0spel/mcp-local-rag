@@ -285,6 +285,8 @@ El refuerzo de palabras clave está activado de forma predeterminada. Para corpu
 | `RAG_GROUPING` | sin configurar | `similar` conserva el primer grupo de relevancia; `related` conserva hasta dos y usa saltos importantes de distancia vectorial como límites. |
 | `RAG_MAX_DISTANCE` | sin configurar | Descarta resultados poco relevantes (por ejemplo, `0.5`). |
 | `RAG_MAX_FILES` | sin configurar | Limita los resultados a los N archivos mejor clasificados (por ejemplo, `1` deja solo el mejor archivo). |
+| `RAG_RERANK_CMD` | sin configurar | Solo servidor MCP: comando externo que reordena los resultados. Tu consulta y el texto encontrado se le envían. |
+| `RAG_RERANK_TIMEOUT_MS` | `10000` | Tiempo máximo por llamada de reordenamiento en milisegundos (100–600000). |
 
 En especificaciones de API y otros documentos con muchos identificadores, un peso mayor de palabras clave puede mejorar la clasificación de términos exactos:
 
@@ -296,6 +298,23 @@ En especificaciones de API y otros documentos con muchos identificadores, un pes
 
 - `0.7`: reajuste de términos exactos algo más fuerte que el valor predeterminado
 - `1.0`: refuerzo máximo de palabras clave
+
+### Reordenamiento externo (`RAG_RERANK_CMD`)
+
+Indica aquí un comando y el servidor le entrega cada conjunto de resultados para reordenarlo, junto con tu consulta y el texto de los fragmentos encontrados. Un comando que contacta con un servicio remoto envía todo eso fuera de esta máquina.
+
+Escribe el comando y sus argumentos separados por espacios. Tiene que ser un ejecutable: el servidor lo lanza sin shell, así que en Windows un adaptador `.cmd` instalado por npm no arranca.
+
+```json
+"env": {
+  "RAG_RERANK_CMD": "/path/to/reranker",
+  "RAG_RERANK_TIMEOUT_MS": "10000"
+}
+```
+
+El comando recibe cada resultado con la forma publicada en [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) y debe responder con esa misma forma. Dentro de ella lo decide todo: qué conservar, cómo ordenarlo y qué dice el texto. Lo que devuelva es lo que verás.
+
+Los resultados conservan su orden original si el comando falla, agota el tiempo o responde con algo que no tiene esa forma.
 
 ## Cómo funciona
 
@@ -382,7 +401,7 @@ Un ejemplo de modelo disponible para documentos en español es `jinaai/jina-embe
 
 - El acceso a archivos está limitado a los directorios raíz configurados con `BASE_DIR`, `BASE_DIRS` o `--base-dir` en la CLI.
 - Se rechazan los enlaces simbólicos cuyo destino esté fuera de todos los directorios raíz configurados.
-- El procesamiento de documentos y las búsquedas no realizan solicitudes de red una vez que los modelos necesarios están en caché.
+- El procesamiento de documentos y las búsquedas no realizan solicitudes de red una vez que los modelos necesarios están en caché, salvo que `RAG_RERANK_CMD` indique un comando que sí las realice.
 - El servidor está diseñado para un único usuario local y no ofrece autenticación ni control de acceso.
 - No ejecutes varios procesos de escritura de la CLI o MCP sobre el mismo `DB_PATH`. Las consultas de solo lectura pueden ejecutarse mientras hay una sincronización en curso.
 - Para crear una copia de seguridad del índice, copia el directorio `DB_PATH` cuando no haya ningún proceso de escritura activo.

@@ -1,6 +1,7 @@
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { describe, expect, it } from 'vitest'
 import { expectInstanceOf } from '../../__tests__/test-doubles.js'
+import { MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from '../../utils/limits.js'
 import {
   parseDeleteFileInput,
   parseIngestDataInput,
@@ -46,14 +47,16 @@ describe('parseQueryDocumentsInput', () => {
     ['zero limit', { query: 'q', limit: 0 }],
     ['non-integer limit', { query: 'q', limit: 2.7 }],
     ['string limit', { query: 'q', limit: '5' }],
-    ['just-above-max limit', { query: 'q', limit: 21 }],
+    ['just-above-max limit', { query: 'q', limit: 101 }],
     ['large limit', { query: 'q', limit: 999 }],
   ])('rejects %s', (_label, raw) => {
-    expect(() => parseQueryDocumentsInput(raw)).toThrow(/limit must be an integer between 1 and 20/)
+    expect(() => parseQueryDocumentsInput(raw)).toThrow(
+      `limit must be an integer between ${MIN_QUERY_LIMIT} and ${MAX_QUERY_LIMIT}`
+    )
   })
 
-  it('accepts the max limit (20)', () => {
-    expect(parseQueryDocumentsInput({ query: 'q', limit: 20 })).toEqual({ query: 'q', limit: 20 })
+  it('accepts the max limit (100)', () => {
+    expect(parseQueryDocumentsInput({ query: 'q', limit: 100 })).toEqual({ query: 'q', limit: 100 })
   })
 
   it('throws InvalidParams error code', () => {

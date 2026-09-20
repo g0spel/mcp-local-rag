@@ -142,8 +142,8 @@ describe('AC-004: Vector Search', () => {
   })
 
   // Edge Case: limit boundary values
-  // Validation: Operates normally with boundary values limit=1, limit=20
-  it('Operates normally with boundary values limit=1, limit=20', async () => {
+  // Validation: Operates normally with boundary values limit=1, limit=100
+  it('Operates normally with boundary values limit=1, limit=100', async () => {
     const result1 = await localRagServer.handleQueryDocuments({
       query: 'TypeScript',
       limit: 1,
@@ -153,14 +153,14 @@ describe('AC-004: Vector Search', () => {
     expect(Array.isArray(results1)).toBe(true)
     expect(results1.length).toBeLessThanOrEqual(1)
 
-    const result20 = await localRagServer.handleQueryDocuments({
+    const result100 = await localRagServer.handleQueryDocuments({
       query: 'TypeScript',
-      limit: 20,
+      limit: 100,
     })
 
-    const results20 = JSON.parse(result20.content[0].text)
-    expect(Array.isArray(results20)).toBe(true)
-    expect(results20.length).toBeLessThanOrEqual(20)
+    const results100 = JSON.parse(result100.content[0].text)
+    expect(Array.isArray(results100)).toBe(true)
+    expect(results100.length).toBeLessThanOrEqual(100)
   })
 })
 

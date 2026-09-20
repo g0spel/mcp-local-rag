@@ -1,0 +1,100 @@
+// The server sends `docs/schema/query-output.schema.json` and accepts the same
+// shape back. Count, identity and repetition are the command's decisions.
+
+import { isInteger, isRecord } from '../utils/type-guards.js'
+
+/** One result, as `docs/schema/query-output.schema.json` defines it. */
+export interface RerankResult {
+  filePath: string
+  chunkIndex: number
+  text: string
+  score: number
+  fileTitle: string | null
+  images: { imageIndex: number; mimeType: 'image/png' | 'image/jpeg'; data: string }[]
+  source?: string
+  [key: string]: unknown
+}
+
+/** The reason reaches stderr, so it names no document text and no path. */
+export type RerankMatch = { ok: true; results: RerankResult[] } | { ok: false; reason: string }
+
+const MIME_TYPES = new Set(['image/png', 'image/jpeg'])
+
+function isNonNegativeInteger(value: unknown): boolean {
+  return isInteger(value) && typeof value === 'number' && value >= 0
+}
+
+function parseArray(stdout: string): unknown[] | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    return undefined
+  }
+  return Array.isArray(parsed) ? parsed : undefined
+}
+
+function imagesValid(value: unknown): boolean {
+  if (!Array.isArray(value)) {
+    return false
+  }
+  return value.every(
+    (image) =>
+      isRecord(image) &&
+      isNonNegativeInteger(image['imageIndex']) &&
+      typeof image['mimeType'] === 'string' &&
+      MIME_TYPES.has(image['mimeType']) &&
+      typeof image['data'] === 'string'
+  )
+}
+
+function isRerankResult(item: unknown): item is RerankResult {
+  if (!isRecord(item)) {
+    return false
+  }
+  if (typeof item['filePath'] !== 'string') {
+    return false
+  }
+  if (!isNonNegativeInteger(item['chunkIndex'])) {
+    return false
+  }
+  if (typeof item['text'] !== 'string') {
+    return false
+  }
+  if (typeof item['score'] !== 'number' || !Number.isFinite(item['score'])) {
+    return false
+  }
+  if (item['fileTitle'] !== null && typeof item['fileTitle'] !== 'string') {
+    return false
+  }
+  if (!imagesValid(item['images'])) {
+    return false
+  }
+  if (item['source'] !== undefined && typeof item['source'] !== 'string') {
+    return false
+  }
+  return true
+}
+
+/**
+ * An empty array, a shorter array, a chunk the server did not send and a
+ * rewritten text are all valid answers; only the form is checked.
+ */
+export function validateRerankResponse(stdout: string): RerankMatch {
+  const items = parseArray(stdout)
+  if (items === undefined) {
+    return { ok: false, reason: 'output was not a JSON array' }
+  }
+  for (const [index, item] of items.entries()) {
+    if (!isRerankResult(item)) {
+      return { ok: false, reason: `output item ${index} did not match the result schema` }
+    }
+  }
+  const results: RerankResult[] = []
+  for (const item of items) {
+    if (isRerankResult(item)) {
+      results.push(item)
+    }
+  }
+  return { ok: true, results }
+}

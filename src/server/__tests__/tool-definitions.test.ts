@@ -1,6 +1,7 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js'
 import { describe, expect, it } from 'vitest'
 import { expectString } from '../../__tests__/test-doubles.js'
+import { MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from '../../utils/limits.js'
 import { isRecord } from '../../utils/type-guards.js'
 import { toolDefinitions } from '../tool-definitions.js'
 
@@ -21,6 +22,23 @@ function propertyOf(tool: Tool, property: string): Record<string, unknown> {
   const value = properties[property]
   return isRecord(value) ? value : {}
 }
+
+describe('query_documents tool definition limit', () => {
+  const limit = propertyOf(findTool('query_documents'), 'limit')
+
+  // Both sides read the same constant, so this does not prove the value; it
+  // proves the wiring and fails if a number is hardcoded into the schema.
+  it('advertises the shared limit range', () => {
+    expect(limit['minimum']).toBe(MIN_QUERY_LIMIT)
+    expect(limit['maximum']).toBe(MAX_QUERY_LIMIT)
+  })
+
+  it('names the shared range in its description', () => {
+    expect(expectString(limit['description'])).toContain(
+      `range ${MIN_QUERY_LIMIT}-${MAX_QUERY_LIMIT}`
+    )
+  })
+})
 
 describe('list_files tool definition scope', () => {
   const listFiles = findTool('list_files')
