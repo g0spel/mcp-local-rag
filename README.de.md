@@ -273,6 +273,8 @@ npx mcp-local-rag --db-path ./my-db query "Authentifizierung"
 
 Die CLI liest keine MCP-Client-Konfiguration. Wenn beide Schnittstellen denselben Index verwenden sollen, müssen dieselben Umgebungsvariablen oder Optionen gesetzt sein. Insbesondere müssen `MODEL_NAME` und die CLI-Option `--model-name` für eine gemeinsam verwendete Datenbank übereinstimmen.
 
+`query` schreibt seine Ergebnisse als JSON nach stdout, den besten Treffer zuerst, sodass sie sich per Pipe an ein anderes Werkzeug übergeben lassen. Die Definition der einzelnen Felder steht in [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
+
 ## Suchparameter anpassen
 
 Die Stichwortgewichtung ist standardmäßig aktiv. Für Korpora, die eine strengere Auswahl erfordern, stehen außerdem die Gruppierung anhand von Relevanzsprüngen sowie Distanz- und Dateifilter zur Verfügung.

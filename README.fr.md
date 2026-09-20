@@ -273,6 +273,8 @@ Exécutez `npx mcp-local-rag --help` pour afficher la référence complète des 
 
 La CLI ne lit pas la configuration du client MCP. Définissez les mêmes variables d'environnement ou options si les deux interfaces doivent partager un index. En particulier, `MODEL_NAME` et l'option CLI `--model-name` doivent correspondre pour une base de données partagée.
 
+`query` écrit ses résultats sur stdout au format JSON, la meilleure correspondance en premier, ce qui permet de les rediriger vers un autre outil. La définition de chaque champ se trouve dans [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
+
 ## Réglage de la recherche
 
 Le renforcement par mots-clés est activé par défaut. Pour les corpus qui nécessitent une sélection plus stricte, vous pouvez aussi configurer le regroupement par écarts de pertinence ainsi que les filtres de distance et de fichiers.

@@ -347,6 +347,10 @@ The CLI does not read MCP client configuration. Set the same environment variabl
 both interfaces should share an index. In particular, `MODEL_NAME` and the CLI `--model-name`
 must match for a shared database.
 
+`query` writes its results to stdout as JSON, best match first, so it can be piped into
+another tool. The field-by-field contract is in
+[`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
+
 ## Search Tuning
 
 Keyword boost is enabled by default. Relevance-gap grouping and the distance and file filters are
