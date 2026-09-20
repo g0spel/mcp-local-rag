@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/shinpr/mcp-local-rag/blob/main/docs/schema/query-output.schema.json",
   "title": "mcp-local-rag query output",
-  "description": "Stdout payload of `mcp-local-rag query`. Results are ordered best-first: the array order IS the ranking, so a consumer that only needs the ranking does not have to read `score`. Consumers must preserve properties they do not recognize; new optional properties may be added without a major version bump.",
+  "description": "Stdout payload of `mcp-local-rag query`. Results are ordered best-first, so the array order is the ranking. Consumers must preserve properties they do not recognize: new optional properties may be added without a major version bump.",
   "type": "array",
   "items": { "$ref": "#/$defs/queryResult" },
   "$defs": {
@@ -17,7 +17,7 @@
         "chunkIndex": {
           "type": "integer",
           "minimum": 0,
-          "description": "Zero-based index of the chunk within its file. Together with `filePath` it identifies the chunk, and both are the inputs `read-neighbors` takes to fetch surrounding chunks."
+          "description": "Zero-based index of the chunk within its file. With `filePath` it identifies the chunk, and the pair is what `read-neighbors` takes."
         },
         "text": {
           "type": "string",
@@ -29,7 +29,7 @@
         },
         "fileTitle": {
           "type": ["string", "null"],
-          "description": "Title of the source document when one could be derived, otherwise null. Useful as context to prepend to `text`, because a chunk taken alone can be too narrow to interpret."
+          "description": "Title of the source document when one could be derived, otherwise null."
         },
         "images": {
           "type": "array",
@@ -38,7 +38,7 @@
         },
         "source": {
           "type": "string",
-          "description": "Original source identifier of content ingested through `ingest_data` (for example the URL an HTML page was fetched from). Present only for chunks whose `filePath` points into the managed raw-data area; absent for ordinary files on disk."
+          "description": "Original source identifier of content ingested through `ingest_data`, for example the URL an HTML page was fetched from. Present only for chunks whose `filePath` points into the managed raw-data area."
         }
       }
     },
@@ -54,7 +54,7 @@
         "mimeType": {
           "type": "string",
           "enum": ["image/png", "image/jpeg"],
-          "description": "Media type of `data`, validated against the decoded bytes rather than taken on trust."
+          "description": "Media type of `data`."
         },
         "data": {
           "type": "string",
