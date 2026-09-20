@@ -273,6 +273,8 @@ npx mcp-local-rag --db-path ./my-db query "身份验证"
 
 CLI 不读取 MCP 客户端配置。如果两个接口需要共用索引，请设置相同的环境变量或命令行参数。特别是共享同一数据库时，`MODEL_NAME` 必须与 CLI 的 `--model-name` 一致。
 
+`query` 会以 JSON 格式将结果写入 stdout，最匹配的结果排在最前，因此可以通过管道传给其他工具。各字段的定义见 [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json)。
+
 ## 搜索调优
 
 关键词加权默认开启。对于需要更严格筛选结果的语料库，还可以使用相关度间隔分组、距离过滤和文件数量限制。

@@ -273,6 +273,8 @@ Execute `npx mcp-local-rag --help` para consultar a referência completa dos com
 
 A CLI não lê a configuração do cliente MCP. Defina as mesmas variáveis de ambiente ou opções se as duas interfaces precisarem compartilhar um índice. Em particular, `MODEL_NAME` e a opção `--model-name` da CLI devem ser iguais quando usam o mesmo banco de dados.
 
+`query` grava os resultados em stdout como JSON, com a melhor correspondência primeiro, para que você possa encaminhá-los por pipe a outra ferramenta. A definição de cada campo está em [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
+
 ## Ajuste da busca
 
 O reforço por palavras-chave é ativado por padrão. Para acervos que exigem uma seleção mais restrita, também é possível configurar o agrupamento por saltos de relevância e os filtros de distância e de arquivos.
