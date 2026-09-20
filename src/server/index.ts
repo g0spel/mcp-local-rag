@@ -14,6 +14,7 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js'
+import { startAutoSyncWatch } from '../auto-sync-watch.js'
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
 import { collectFiles } from '../cli/file-collection.js'
 import { Embedder } from '../embedder/index.js'
@@ -475,6 +476,14 @@ export class RAGServer {
    */
   async initialize(): Promise<void> {
     await this.vectorStore.initialize()
+    const watchers = startAutoSyncWatch({
+      baseDirs: this.baseDirs,
+      onDriftSignal: () => this.maybeAutoSync(),
+      onError: (message) => console.error(message),
+    })
+    if (watchers.length > 0) {
+      console.error('Auto-sync: watching document roots for changes')
+    }
     console.error('RAGServer initialized')
   }
 
