@@ -14,8 +14,18 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { testModelCacheDir } from '../../__tests__/test-device.js'
 import { privateMembers } from '../../__tests__/test-doubles.js'
 import type { DocumentParser } from '../../parser/index.js'
-import { parseStoreImages, resolveServerConfig } from '../../server-main.js'
+import {
+  parseRerankCmd,
+  parseRerankTimeoutMs,
+  parseStoreImages,
+  resolveServerConfig,
+} from '../../server-main.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
+import {
+  DEFAULT_RERANK_TIMEOUT_MS,
+  RERANK_TIMEOUT_MAX_MS,
+  RERANK_TIMEOUT_MIN_MS,
+} from '../../utils/limits.js'
 import { RAGServer } from '../index.js'
 
 describe('STORE_IMAGES configuration', () => {
@@ -100,6 +110,75 @@ describe('RAGServerConfig degraded-mode construction guards (P3-T1)', () => {
     const { parser } = privateMembers<{ parser: DocumentParser }>(server)
     await expect(parser.validateFilePath('/tmp/anything.txt')).rejects.toThrow(
       /No configured base directory/
+    )
+  })
+})
+
+describe('RAG_RERANK_CMD configuration', () => {
+  const cwd = resolve('./tmp/test-lancedb-config-shape')
+
+  it('leaves the command unset when the variable is unset or blank', () => {
+    expect(parseRerankCmd(undefined)).toEqual({ value: undefined })
+    expect(parseRerankCmd('   ')).toEqual({ value: undefined })
+  })
+
+  it('keeps the configured command verbatim apart from surrounding whitespace', () => {
+    expect(parseRerankCmd(' /usr/local/bin/reranker --model base ')).toEqual({
+      value: '/usr/local/bin/reranker --model base',
+    })
+  })
+
+  it('threads the command through resolveServerConfig', async () => {
+    const disabled = await resolveServerConfig({ BASE_DIR: cwd }, cwd)
+    expect(disabled.rerankCommand).toBeUndefined()
+
+    const enabled = await resolveServerConfig(
+      { BASE_DIR: cwd, RAG_RERANK_CMD: '/usr/local/bin/reranker' },
+      cwd
+    )
+    expect(enabled.rerankCommand).toBe('/usr/local/bin/reranker')
+  })
+})
+
+describe('RAG_RERANK_TIMEOUT_MS configuration', () => {
+  const cwd = resolve('./tmp/test-lancedb-config-shape')
+
+  it('uses the default when the variable is unset or empty', () => {
+    expect(parseRerankTimeoutMs(undefined)).toEqual({ value: DEFAULT_RERANK_TIMEOUT_MS })
+    expect(parseRerankTimeoutMs('')).toEqual({ value: DEFAULT_RERANK_TIMEOUT_MS })
+  })
+
+  it.each([String(RERANK_TIMEOUT_MIN_MS), '30000', String(RERANK_TIMEOUT_MAX_MS)])(
+    'accepts %s',
+    (raw) => {
+      expect(parseRerankTimeoutMs(raw)).toEqual({ value: Number(raw) })
+    }
+  )
+
+  // Node's timers clamp a delay below 1 or above 2^31-1 to 1ms and truncate a
+  // fraction, so each of these would otherwise make every rerank time out at once.
+  it.each(['0', '-1', '1.5', String(RERANK_TIMEOUT_MAX_MS + 1), '2147483648', 'soon'])(
+    'warns and keeps the default for %j',
+    (raw) => {
+      const parsed = parseRerankTimeoutMs(raw)
+      expect(parsed.value).toBe(DEFAULT_RERANK_TIMEOUT_MS)
+      expect(parsed.warning).toBe(
+        `Invalid RAG_RERANK_TIMEOUT_MS value: "${raw}". Expected integer between ${RERANK_TIMEOUT_MIN_MS} and ${RERANK_TIMEOUT_MAX_MS}. Using default (${DEFAULT_RERANK_TIMEOUT_MS}).`
+      )
+    }
+  )
+
+  it('threads the parsed value and warning through resolveServerConfig', async () => {
+    const valid = await resolveServerConfig({ BASE_DIR: cwd, RAG_RERANK_TIMEOUT_MS: '2000' }, cwd)
+    expect(valid.rerankTimeoutMs).toBe(2000)
+    expect(valid.configWarnings ?? []).not.toContainEqual(
+      expect.stringContaining('RAG_RERANK_TIMEOUT_MS')
+    )
+
+    const invalid = await resolveServerConfig({ BASE_DIR: cwd, RAG_RERANK_TIMEOUT_MS: '0' }, cwd)
+    expect(invalid.rerankTimeoutMs).toBe(DEFAULT_RERANK_TIMEOUT_MS)
+    expect(invalid.configWarnings).toContain(
+      `Invalid RAG_RERANK_TIMEOUT_MS value: "0". Expected integer between ${RERANK_TIMEOUT_MIN_MS} and ${RERANK_TIMEOUT_MAX_MS}. Using default (${DEFAULT_RERANK_TIMEOUT_MS}).`
     )
   })
 })
