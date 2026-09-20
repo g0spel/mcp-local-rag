@@ -285,6 +285,8 @@ O reforço por palavras-chave é ativado por padrão. Para acervos que exigem um
 | `RAG_GROUPING` | não definido | `similar` mantém o primeiro grupo de relevância; `related` mantém até dois e usa saltos relevantes na distância vetorial como limites. |
 | `RAG_MAX_DISTANCE` | não definido | Descarta resultados pouco relevantes, por exemplo, com `0.5`. |
 | `RAG_MAX_FILES` | não definido | Limita os resultados aos N arquivos mais bem classificados, por exemplo, `1` para apenas o melhor arquivo. |
+| `RAG_RERANK_CMD` | não definido | Somente servidor MCP: comando externo que reordena os resultados da busca. Sem definição, o reordenamento fica desativado. |
+| `RAG_RERANK_TIMEOUT_MS` | `10000` | Tempo máximo por reordenamento em milissegundos (100–600000). |
 
 Em especificações de API e outros documentos com muitos identificadores, um peso maior para palavras-chave pode melhorar a classificação de termos exatos:
 
@@ -296,6 +298,21 @@ Em especificações de API e outros documentos com muitos identificadores, um pe
 
 - `0.7`: reordenamento de termos exatos um pouco mais forte que o padrão
 - `1.0`: reforço máximo por palavras-chave
+
+### Reordenamento externo (`RAG_RERANK_CMD`)
+
+Com `RAG_RERANK_CMD`, um comando externo reordena os resultados da ferramenta MCP `query_documents`. O servidor escreve a consulta de busca e o texto dos trechos encontrados na entrada padrão desse comando, portanto um comando que acessa um serviço remoto envia sua consulta e o conteúdo dos seus documentos para fora desta máquina. O reordenamento fica desativado enquanto a variável não for definida, e a CLI não o utiliza.
+
+O valor é um comando com seus argumentos, separados por espaços. Ele é executado sem shell, então o comando precisa ser diretamente executável: no Windows, um atalho `.cmd` ou `.bat` instalado pelo npm não pode ser iniciado e é necessário informar o executável diretamente. O servidor acrescenta `--query <texto>` e `--top <n>` aos argumentos que você configurar.
+
+```json
+"env": {
+  "RAG_RERANK_CMD": "/path/to/reranker --score-field score",
+  "RAG_RERANK_TIMEOUT_MS": "10000"
+}
+```
+
+Se o comando não puder ser iniciado, falhar, ultrapassar `RAG_RERANK_TIMEOUT_MS` ou devolver uma saída que o servidor não consiga associar aos próprios resultados, os resultados mantêm a ordem original.
 
 ## Como funciona
 
@@ -382,7 +399,7 @@ Um exemplo de modelo disponível para documentos em português é `Xenova/paraph
 
 - O acesso a arquivos fica restrito aos diretórios raiz definidos em `BASE_DIR`, `BASE_DIRS` ou pela opção `--base-dir` da CLI.
 - Links simbólicos que apontam para fora de todos os diretórios raiz configurados são rejeitados.
-- O processamento dos documentos e as buscas não fazem solicitações de rede depois que os modelos necessários estão no cache.
+- O processamento dos documentos e as buscas não fazem solicitações de rede depois que os modelos necessários estão no cache, a menos que `RAG_RERANK_CMD` indique um comando que as faça.
 - O servidor foi projetado para um único usuário local e não oferece autenticação nem controle de acesso.
 - Não execute vários processos de escrita da CLI ou do MCP no mesmo `DB_PATH`. Consultas somente leitura podem ser executadas durante uma sincronização.
 - Para fazer backup do índice, copie o diretório `DB_PATH` enquanto não houver nenhum processo de escrita ativo.

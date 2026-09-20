@@ -285,6 +285,8 @@ Die Stichwortgewichtung ist standardmäßig aktiv. Für Korpora, die eine streng
 | `RAG_GROUPING` | nicht gesetzt | `similar` behält die erste Relevanzgruppe; `related` behält bis zu zwei Gruppen und trennt sie an deutlichen Sprüngen der Vektordistanz. |
 | `RAG_MAX_DISTANCE` | nicht gesetzt | Filtert wenig relevante Treffer heraus, zum Beispiel mit `0.5`. |
 | `RAG_MAX_FILES` | nicht gesetzt | Beschränkt die Treffer auf die besten N Dateien, zum Beispiel mit `1` auf die beste Datei. |
+| `RAG_RERANK_CMD` | nicht gesetzt | Nur MCP-Server: externer Befehl, der die Suchtreffer neu ordnet. Nicht gesetzt deaktiviert das Neuordnen. |
+| `RAG_RERANK_TIMEOUT_MS` | `10000` | Zeitbudget pro Neuordnung in Millisekunden (100–600000). |
 
 Bei API-Spezifikationen und anderen Dokumenten mit vielen Bezeichnern kann ein höheres Stichwortgewicht die Rangfolge exakter Treffer verbessern:
 
@@ -296,6 +298,21 @@ Bei API-Spezifikationen und anderen Dokumenten mit vielen Bezeichnern kann ein h
 
 - `0.7`: etwas stärkere Gewichtung exakter Begriffe als in der Standardeinstellung
 - `1.0`: höchste Stichwortgewichtung
+
+### Externes Neuordnen (`RAG_RERANK_CMD`)
+
+Mit `RAG_RERANK_CMD` ordnet ein externer Befehl die Treffer des MCP-Tools `query_documents` neu. Der Server schreibt die Suchanfrage und den Text der gefundenen Abschnitte auf die Standardeingabe dieses Befehls. Ein Befehl, der einen entfernten Dienst aufruft, sendet damit deine Suchanfrage und deine Dokumentinhalte von diesem Rechner fort. Das Neuordnen bleibt deaktiviert, solange die Variable nicht gesetzt ist, und die CLI verwendet es nicht.
+
+Der Wert ist ein Befehl mit seinen Argumenten, getrennt durch Leerzeichen. Er wird ohne Shell ausgeführt, deshalb muss der Befehl direkt ausführbar sein: Unter Windows lässt sich ein von npm installierter `.cmd`- oder `.bat`-Wrapper nicht starten, die ausführbare Datei muss direkt benannt werden. Der Server hängt `--query <Text>` und `--top <n>` an die konfigurierten Argumente an.
+
+```json
+"env": {
+  "RAG_RERANK_CMD": "/path/to/reranker --score-field score",
+  "RAG_RERANK_TIMEOUT_MS": "10000"
+}
+```
+
+Lässt sich der Befehl nicht starten, schlägt er fehl, überschreitet er `RAG_RERANK_TIMEOUT_MS` oder liefert er eine Ausgabe, die der Server seinen eigenen Treffern nicht zuordnen kann, bleibt die ursprüngliche Reihenfolge erhalten.
 
 ## Funktionsweise
 
@@ -382,7 +399,7 @@ Ein Beispiel für deutschsprachige Dokumente ist das Modell `jinaai/jina-embeddi
 
 - Dateizugriffe sind auf die mit `BASE_DIR`, `BASE_DIRS` oder der CLI-Option `--base-dir` festgelegten Stammverzeichnisse beschränkt.
 - Symbolische Links, deren Ziel außerhalb aller konfigurierten Stammverzeichnisse liegt, werden abgelehnt.
-- Sobald die benötigten Modelle im Cache liegen, greifen Dokumentverarbeitung und Suche nicht mehr auf das Netzwerk zu.
+- Sobald die benötigten Modelle im Cache liegen, greifen Dokumentverarbeitung und Suche nicht mehr auf das Netzwerk zu, sofern `RAG_RERANK_CMD` nicht einen Befehl benennt, der das tut.
 - Der Server ist für einen einzelnen lokalen Benutzer ausgelegt und bietet keine Authentifizierung oder Zugriffskontrolle.
 - Mehrere CLI- oder MCP-Schreibprozesse dürfen nicht gleichzeitig denselben `DB_PATH` verwenden. Reine Leseabfragen sind während einer Synchronisierung möglich.
 - Sichere den Index, indem du das `DB_PATH`-Verzeichnis kopierst, während kein Schreibprozess läuft.

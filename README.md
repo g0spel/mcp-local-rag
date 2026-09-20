@@ -363,6 +363,8 @@ server and to CLI `query` alike.
 | `RAG_GROUPING` | (not set) | `similar` keeps the first relevance group; `related` keeps up to two, using significant vector-distance gaps as boundaries. |
 | `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
 | `RAG_MAX_FILES` | (not set) | Limit results to top N files (e.g., `1` for single best file). |
+| `RAG_RERANK_CMD` | (not set) | MCP server only: external command that reorders search results. Not set disables reranking. |
+| `RAG_RERANK_TIMEOUT_MS` | `10000` | Time budget per rerank call in milliseconds (100–600000). |
 
 For API specifications and other documents containing many identifiers, a stronger keyword
 weight can improve exact-term ranking:
@@ -375,6 +377,29 @@ weight can improve exact-term ranking:
 
 - `0.7`: slightly stronger exact-term reranking than the default
 - `1.0`: maximum keyword boost
+
+### External Reranking (`RAG_RERANK_CMD`)
+
+Setting `RAG_RERANK_CMD` lets an external command reorder the results of the MCP
+`query_documents` tool. The server writes the search query and the text of the matched chunks to
+that command's standard input, so a command that contacts a remote service sends your query and
+your document content off this machine. Reranking stays off until you set the variable, and the
+CLI does not use it.
+
+The value is a command and its arguments, separated by spaces. It runs without a shell, so the
+command must be directly executable: on Windows an npm-installed `.cmd` or `.bat` shim cannot be
+started and the executable has to be named directly. The server appends `--query <text>` and
+`--top <n>` to the arguments you configure.
+
+```json
+"env": {
+  "RAG_RERANK_CMD": "/path/to/reranker --score-field score",
+  "RAG_RERANK_TIMEOUT_MS": "10000"
+}
+```
+
+If the command cannot start, fails, exceeds `RAG_RERANK_TIMEOUT_MS`, or returns output the server
+cannot match to its own results, the results keep their original order.
 
 ## How It Works
 
@@ -473,7 +498,8 @@ An example model for English documents is `Xenova/bge-small-en-v1.5`.
 
 - File access is restricted to `BASE_DIR`, `BASE_DIRS`, or CLI `--base-dir` roots.
 - Symlinks that resolve outside every configured root are rejected.
-- Document processing and search make no network requests after the required models are cached.
+- Document processing and search make no network requests after the required models are cached,
+  unless `RAG_RERANK_CMD` names a command that makes them.
 - The server is designed for one local user and does not provide authentication or access control.
 - Do not run multiple CLI or MCP writers against the same `DB_PATH`. Read-only queries can run
   while a sync is active.

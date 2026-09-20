@@ -123,6 +123,20 @@
           "isRequired": false,
           "format": "string",
           "isSecret": false
+        },
+        {
+          "name": "RAG_RERANK_CMD",
+          "description": "External command that reorders query_documents results (unset disables reranking). The search query and the matched document chunks, including their text, are passed to this command, so a command that contacts a remote service sends that content off this machine.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "RAG_RERANK_TIMEOUT_MS",
+          "description": "Time budget per rerank call in milliseconds (100-600000, defaults to 10000). On timeout the spawned command is killed and the pre-rerank ordering is returned.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
         }
       ],
       "features": {

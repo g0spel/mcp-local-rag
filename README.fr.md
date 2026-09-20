@@ -285,6 +285,8 @@ Le renforcement par mots-clés est activé par défaut. Pour les corpus qui néc
 | `RAG_GROUPING` | non définie | `similar` conserve le premier groupe de pertinence ; `related` en conserve jusqu'à deux et utilise les écarts importants de distance vectorielle comme limites. |
 | `RAG_MAX_DISTANCE` | non définie | Écarte les résultats peu pertinents, par exemple avec `0.5`. |
 | `RAG_MAX_FILES` | non définie | Limite les résultats aux N fichiers les mieux classés, par exemple `1` pour le meilleur fichier uniquement. |
+| `RAG_RERANK_CMD` | non définie | Serveur MCP uniquement : commande externe qui reclasse les résultats de recherche. Non définie, le reclassement est désactivé. |
+| `RAG_RERANK_TIMEOUT_MS` | `10000` | Délai maximal par reclassement, en millisecondes (100–600000). |
 
 Pour les spécifications d'API et les autres documents comportant de nombreux identifiants, un poids plus élevé des mots-clés peut améliorer le classement des termes exacts :
 
@@ -296,6 +298,21 @@ Pour les spécifications d'API et les autres documents comportant de nombreux id
 
 - `0.7` : reclassement des termes exacts légèrement plus fort que la valeur par défaut
 - `1.0` : renforcement maximal des mots-clés
+
+### Reclassement externe (`RAG_RERANK_CMD`)
+
+Avec `RAG_RERANK_CMD`, une commande externe reclasse les résultats de l'outil MCP `query_documents`. Le serveur écrit la requête de recherche et le texte des passages trouvés sur l'entrée standard de cette commande : une commande qui appelle un service distant envoie donc votre requête et le contenu de vos documents hors de cette machine. Le reclassement reste désactivé tant que la variable n'est pas définie, et la CLI ne l'utilise pas.
+
+La valeur est une commande et ses arguments, séparés par des espaces. Elle s'exécute sans shell, la commande doit donc être directement exécutable : sous Windows, un script `.cmd` ou `.bat` installé par npm ne peut pas être lancé et il faut nommer l'exécutable directement. Le serveur ajoute `--query <texte>` et `--top <n>` aux arguments que vous configurez.
+
+```json
+"env": {
+  "RAG_RERANK_CMD": "/path/to/reranker --score-field score",
+  "RAG_RERANK_TIMEOUT_MS": "10000"
+}
+```
+
+Si la commande ne peut pas démarrer, échoue, dépasse `RAG_RERANK_TIMEOUT_MS` ou renvoie une sortie que le serveur ne peut pas associer à ses propres résultats, les résultats conservent leur ordre initial.
 
 ## Fonctionnement
 
@@ -382,7 +399,7 @@ Un exemple de modèle disponible pour les documents en français est `sentence-t
 
 - L'accès aux fichiers est limité aux racines définies par `BASE_DIR`, `BASE_DIRS` ou l'option CLI `--base-dir`.
 - Les liens symboliques qui pointent hors de toutes les racines configurées sont refusés.
-- Le traitement des documents et la recherche n'effectuent plus de requêtes réseau une fois les modèles nécessaires en cache.
+- Le traitement des documents et la recherche n'effectuent plus de requêtes réseau une fois les modèles nécessaires en cache, sauf si `RAG_RERANK_CMD` désigne une commande qui en effectue.
 - Le serveur est conçu pour un seul utilisateur local et ne fournit ni authentification ni contrôle d'accès.
 - Ne lancez pas plusieurs processus d'écriture CLI ou MCP sur le même `DB_PATH`. Les requêtes en lecture seule restent possibles pendant une synchronisation.
 - Pour sauvegarder un index, copiez le répertoire `DB_PATH` lorsqu'aucun processus d'écriture n'est actif.
