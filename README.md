@@ -347,10 +347,15 @@ The CLI does not read MCP client configuration. Set the same environment variabl
 both interfaces should share an index. In particular, `MODEL_NAME` and the CLI `--model-name`
 must match for a shared database.
 
+`query` writes its results to stdout as JSON, best match first, so it can be piped into
+another tool. The field-by-field contract is in
+[`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
+
 ## Search Tuning
 
 Keyword boost is enabled by default. Relevance-gap grouping and the distance and file filters are
-optional controls for corpora that need tighter result selection.
+optional controls for corpora that need tighter result selection. All four apply to the MCP
+server and to CLI `query` alike.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -358,6 +363,8 @@ optional controls for corpora that need tighter result selection.
 | `RAG_GROUPING` | (not set) | `similar` keeps the first relevance group; `related` keeps up to two, using significant vector-distance gaps as boundaries. |
 | `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
 | `RAG_MAX_FILES` | (not set) | Limit results to top N files (e.g., `1` for single best file). |
+| `RAG_RERANK_CMD` | (not set) | MCP server only: external command that reorders results. Your query and the matched text are sent to it. |
+| `RAG_RERANK_TIMEOUT_MS` | `10000` | Time budget per rerank call in milliseconds (100–600000). |
 
 For API specifications and other documents containing many identifiers, a stronger keyword
 weight can improve exact-term ranking:
@@ -370,6 +377,30 @@ weight can improve exact-term ranking:
 
 - `0.7`: slightly stronger exact-term reranking than the default
 - `1.0`: maximum keyword boost
+
+### External Reranking (`RAG_RERANK_CMD`)
+
+Name a command here and the server hands it each set of search results to reorder, together with
+your query and the text of the matched chunks. A command that calls a remote service sends all of
+that off this machine.
+
+Give the command and its arguments separated by spaces. It has to be an executable: the server
+runs it without a shell, so an npm-installed `.cmd` shim on Windows will not start.
+
+```json
+"env": {
+  "RAG_RERANK_CMD": "/path/to/reranker",
+  "RAG_RERANK_TIMEOUT_MS": "10000"
+}
+```
+
+The command receives each result in the form published at
+[`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) and has to answer
+in that same form. Within it the command decides everything: what to keep, how to order it, and
+what the text says. Whatever it returns is what you see.
+
+Results keep their original order if the command fails, times out, or answers with something that
+is not that form.
 
 ## How It Works
 
@@ -468,7 +499,8 @@ An example model for English documents is `Xenova/bge-small-en-v1.5`.
 
 - File access is restricted to `BASE_DIR`, `BASE_DIRS`, or CLI `--base-dir` roots.
 - Symlinks that resolve outside every configured root are rejected.
-- Document processing and search make no network requests after the required models are cached.
+- Document processing and search make no network requests after the required models are cached,
+  unless `RAG_RERANK_CMD` names a command that makes them.
 - The server is designed for one local user and does not provide authentication or access control.
 - Do not run multiple CLI or MCP writers against the same `DB_PATH`. Read-only queries can run
   while a sync is active.

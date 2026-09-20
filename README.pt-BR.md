@@ -273,9 +273,11 @@ Execute `npx mcp-local-rag --help` para consultar a referência completa dos com
 
 A CLI não lê a configuração do cliente MCP. Defina as mesmas variáveis de ambiente ou opções se as duas interfaces precisarem compartilhar um índice. Em particular, `MODEL_NAME` e a opção `--model-name` da CLI devem ser iguais quando usam o mesmo banco de dados.
 
+`query` grava os resultados em stdout como JSON, com a melhor correspondência primeiro, para que você possa encaminhá-los por pipe a outra ferramenta. A definição de cada campo está em [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
+
 ## Ajuste da busca
 
-O reforço por palavras-chave é ativado por padrão. Para acervos que exigem uma seleção mais restrita, também é possível configurar o agrupamento por saltos de relevância e os filtros de distância e de arquivos.
+O reforço por palavras-chave é ativado por padrão. Para acervos que exigem uma seleção mais restrita, também é possível configurar o agrupamento por saltos de relevância e os filtros de distância e de arquivos. As quatro valem tanto para o servidor MCP quanto para `query` na CLI.
 
 | Variável | Padrão | Descrição |
 |----------|---------|-------------|
@@ -283,6 +285,8 @@ O reforço por palavras-chave é ativado por padrão. Para acervos que exigem um
 | `RAG_GROUPING` | não definido | `similar` mantém o primeiro grupo de relevância; `related` mantém até dois e usa saltos relevantes na distância vetorial como limites. |
 | `RAG_MAX_DISTANCE` | não definido | Descarta resultados pouco relevantes, por exemplo, com `0.5`. |
 | `RAG_MAX_FILES` | não definido | Limita os resultados aos N arquivos mais bem classificados, por exemplo, `1` para apenas o melhor arquivo. |
+| `RAG_RERANK_CMD` | não definido | Somente servidor MCP: comando externo que reordena os resultados. Sua consulta e o texto encontrado são enviados a ele. |
+| `RAG_RERANK_TIMEOUT_MS` | `10000` | Tempo máximo por reordenamento em milissegundos (100–600000). |
 
 Em especificações de API e outros documentos com muitos identificadores, um peso maior para palavras-chave pode melhorar a classificação de termos exatos:
 
@@ -294,6 +298,23 @@ Em especificações de API e outros documentos com muitos identificadores, um pe
 
 - `0.7`: reordenamento de termos exatos um pouco mais forte que o padrão
 - `1.0`: reforço máximo por palavras-chave
+
+### Reordenamento externo (`RAG_RERANK_CMD`)
+
+Informe aqui um comando e o servidor entrega a ele cada conjunto de resultados para reordenar, junto com sua consulta e o texto dos trechos encontrados. Um comando que acessa um serviço remoto envia tudo isso para fora desta máquina.
+
+Escreva o comando e seus argumentos separados por espaços. Precisa ser um executável: o servidor o inicia sem shell, então no Windows um atalho `.cmd` instalado pelo npm não abre.
+
+```json
+"env": {
+  "RAG_RERANK_CMD": "/path/to/reranker",
+  "RAG_RERANK_TIMEOUT_MS": "10000"
+}
+```
+
+O comando recebe cada resultado no formato publicado em [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) e precisa responder nesse mesmo formato. Dentro dele o comando decide tudo: o que manter, como ordenar e o que o texto diz. O que ele devolver é o que você vê.
+
+Os resultados mantêm a ordem original se o comando falhar, estourar o tempo ou responder com algo fora desse formato.
 
 ## Como funciona
 
@@ -380,7 +401,7 @@ Um exemplo de modelo disponível para documentos em português é `Xenova/paraph
 
 - O acesso a arquivos fica restrito aos diretórios raiz definidos em `BASE_DIR`, `BASE_DIRS` ou pela opção `--base-dir` da CLI.
 - Links simbólicos que apontam para fora de todos os diretórios raiz configurados são rejeitados.
-- O processamento dos documentos e as buscas não fazem solicitações de rede depois que os modelos necessários estão no cache.
+- O processamento dos documentos e as buscas não fazem solicitações de rede depois que os modelos necessários estão no cache, a menos que `RAG_RERANK_CMD` indique um comando que as faça.
 - O servidor foi projetado para um único usuário local e não oferece autenticação nem controle de acesso.
 - Não execute vários processos de escrita da CLI ou do MCP no mesmo `DB_PATH`. Consultas somente leitura podem ser executadas durante uma sincronização.
 - Para fazer backup do índice, copie o diretório `DB_PATH` enquanto não houver nenhum processo de escrita ativo.

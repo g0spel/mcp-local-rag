@@ -56,7 +56,10 @@ export interface VectorStoreConfig {
 export interface SearchOptions {
   /** Optional query text for keyword boost (BM25) */
   queryText?: string
-  /** Number of results to retrieve (default 10, valid range 1-20) */
+  /**
+   * Number of results to retrieve (default 10). The valid range is
+   * `MIN_QUERY_LIMIT`-`MAX_QUERY_LIMIT` (`src/utils/limits.ts`).
+   */
   limit?: number
   /**
    * Optional path-prefix scope (exact-or-descendant, prefixes unioned). Omitted

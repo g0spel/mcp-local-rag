@@ -48,4 +48,5 @@ CLAUDE.md
 .claude/
 .agents/
 AGENTS.md
-docs/
+docs/*
+!docs/schema/

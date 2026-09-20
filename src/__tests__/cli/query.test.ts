@@ -57,8 +57,12 @@ const rawDataUtilsFactory = () => ({
 
 const MOCKED_PATHS = ['../../cli/common.js', '../../utils/raw-data-utils.js'] as const
 
+import { MAX_QUERY_LIMIT, MIN_QUERY_LIMIT } from '../../utils/limits.js'
 import { expectError } from '../test-doubles.js'
 import { formatCliErrorShim } from './cli-error-shim.js'
+
+/** Derived from the constants so the message cannot drift from the enforced range. */
+const LIMIT_RANGE_MESSAGE = `--limit must be between ${MIN_QUERY_LIMIT} and ${MAX_QUERY_LIMIT}`
 
 let parseArgs: typeof import('../../cli/query.js').parseArgs
 let runQuery: typeof import('../../cli/query.js').runQuery
@@ -180,17 +184,17 @@ describe('CLI query', () => {
     expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
-    expect(joined).toContain('--limit must be between 1 and 20')
+    expect(joined).toContain(LIMIT_RANGE_MESSAGE)
   })
 
-  it('should exit with code 1 when --limit is 21', async () => {
-    const { stderr, error } = await captureOutput(() => runQuery(['--limit', '21', 'search text']))
+  it('should exit with code 1 when --limit is 101', async () => {
+    const { stderr, error } = await captureOutput(() => runQuery(['--limit', '101', 'search text']))
 
     expect(error).toBeInstanceOf(Error)
     expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
-    expect(joined).toContain('--limit must be between 1 and 20')
+    expect(joined).toContain(LIMIT_RANGE_MESSAGE)
   })
 
   it('should exit with code 1 when --limit is not a number', async () => {
@@ -200,7 +204,7 @@ describe('CLI query', () => {
     expect(expectError(error).message).toBe('process.exit(1)')
 
     const joined = stderr.join('\n')
-    expect(joined).toContain('--limit must be between 1 and 20')
+    expect(joined).toContain(LIMIT_RANGE_MESSAGE)
   })
 
   it('should exit with code 1 when --limit value is missing', async () => {
@@ -544,7 +548,7 @@ describe('CLI query', () => {
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
         expect(() => parseArgs(['--limit', 'abc', 'query text'])).toThrow('process.exit(1)')
-        expect(errorSpy).toHaveBeenCalledWith('--limit must be between 1 and 20')
+        expect(errorSpy).toHaveBeenCalledWith(LIMIT_RANGE_MESSAGE)
       } finally {
         errorSpy.mockRestore()
       }
@@ -554,7 +558,7 @@ describe('CLI query', () => {
       const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       try {
         expect(() => parseArgs(['--limit', '5abc', 'query text'])).toThrow('process.exit(1)')
-        expect(errorSpy).toHaveBeenCalledWith('--limit must be between 1 and 20')
+        expect(errorSpy).toHaveBeenCalledWith(LIMIT_RANGE_MESSAGE)
       } finally {
         errorSpy.mockRestore()
       }
@@ -655,15 +659,15 @@ describe('CLI query', () => {
     )
   })
 
-  it('should accept --limit 20 (maximum)', async () => {
+  it('should accept --limit 100 (maximum)', async () => {
     mocks.search.mockResolvedValue([])
 
-    const { error } = await captureOutput(() => runQuery(['--limit', '20', 'query']))
+    const { error } = await captureOutput(() => runQuery(['--limit', '100', 'query']))
 
     expect(error).toBeUndefined()
     expect(mocks.search).toHaveBeenCalledWith(
       expect.any(Array),
-      expect.objectContaining({ queryText: 'query', limit: 20 })
+      expect.objectContaining({ queryText: 'query', limit: 100 })
     )
   })
 })

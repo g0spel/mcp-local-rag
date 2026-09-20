@@ -273,9 +273,11 @@ npx mcp-local-rag --db-path ./my-db query "Authentifizierung"
 
 Die CLI liest keine MCP-Client-Konfiguration. Wenn beide Schnittstellen denselben Index verwenden sollen, müssen dieselben Umgebungsvariablen oder Optionen gesetzt sein. Insbesondere müssen `MODEL_NAME` und die CLI-Option `--model-name` für eine gemeinsam verwendete Datenbank übereinstimmen.
 
+`query` schreibt seine Ergebnisse als JSON nach stdout, den besten Treffer zuerst, sodass sie sich per Pipe an ein anderes Werkzeug übergeben lassen. Die Definition der einzelnen Felder steht in [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
+
 ## Suchparameter anpassen
 
-Die Stichwortgewichtung ist standardmäßig aktiv. Für Korpora, die eine strengere Auswahl erfordern, stehen außerdem die Gruppierung anhand von Relevanzsprüngen sowie Distanz- und Dateifilter zur Verfügung.
+Die Stichwortgewichtung ist standardmäßig aktiv. Für Korpora, die eine strengere Auswahl erfordern, stehen außerdem die Gruppierung anhand von Relevanzsprüngen sowie Distanz- und Dateifilter zur Verfügung. Alle vier gelten für den MCP-Server und für `query` in der CLI gleichermaßen.
 
 | Variable | Standard | Beschreibung |
 |----------|---------|-------------|
@@ -283,6 +285,8 @@ Die Stichwortgewichtung ist standardmäßig aktiv. Für Korpora, die eine streng
 | `RAG_GROUPING` | nicht gesetzt | `similar` behält die erste Relevanzgruppe; `related` behält bis zu zwei Gruppen und trennt sie an deutlichen Sprüngen der Vektordistanz. |
 | `RAG_MAX_DISTANCE` | nicht gesetzt | Filtert wenig relevante Treffer heraus, zum Beispiel mit `0.5`. |
 | `RAG_MAX_FILES` | nicht gesetzt | Beschränkt die Treffer auf die besten N Dateien, zum Beispiel mit `1` auf die beste Datei. |
+| `RAG_RERANK_CMD` | nicht gesetzt | Nur MCP-Server: externer Befehl, der die Treffer neu ordnet. Deine Suchanfrage und der gefundene Text gehen an ihn. |
+| `RAG_RERANK_TIMEOUT_MS` | `10000` | Zeitbudget pro Neuordnung in Millisekunden (100–600000). |
 
 Bei API-Spezifikationen und anderen Dokumenten mit vielen Bezeichnern kann ein höheres Stichwortgewicht die Rangfolge exakter Treffer verbessern:
 
@@ -294,6 +298,23 @@ Bei API-Spezifikationen und anderen Dokumenten mit vielen Bezeichnern kann ein h
 
 - `0.7`: etwas stärkere Gewichtung exakter Begriffe als in der Standardeinstellung
 - `1.0`: höchste Stichwortgewichtung
+
+### Externes Neuordnen (`RAG_RERANK_CMD`)
+
+Nenne hier einen Befehl, und der Server übergibt ihm jede Trefferliste zum Neuordnen, zusammen mit deiner Suchanfrage und dem Text der gefundenen Abschnitte. Ein Befehl, der einen entfernten Dienst aufruft, sendet all das von diesem Rechner fort.
+
+Gib den Befehl und seine Argumente durch Leerzeichen getrennt an. Es muss eine ausführbare Datei sein: Der Server startet sie ohne Shell, deshalb lässt sich ein von npm installierter `.cmd`-Wrapper unter Windows nicht starten.
+
+```json
+"env": {
+  "RAG_RERANK_CMD": "/path/to/reranker",
+  "RAG_RERANK_TIMEOUT_MS": "10000"
+}
+```
+
+Der Befehl erhält jeden Treffer in der unter [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) veröffentlichten Form und muss in derselben Form antworten. Darin entscheidet er alles: was er behält, wie er es ordnet und was im Text steht. Was er zurückgibt, bekommst du zu sehen.
+
+Schlägt der Befehl fehl, läuft er in die Zeitgrenze oder antwortet er mit etwas, das diese Form nicht hat, bleibt die ursprüngliche Reihenfolge erhalten.
 
 ## Funktionsweise
 
@@ -380,7 +401,7 @@ Ein Beispiel für deutschsprachige Dokumente ist das Modell `jinaai/jina-embeddi
 
 - Dateizugriffe sind auf die mit `BASE_DIR`, `BASE_DIRS` oder der CLI-Option `--base-dir` festgelegten Stammverzeichnisse beschränkt.
 - Symbolische Links, deren Ziel außerhalb aller konfigurierten Stammverzeichnisse liegt, werden abgelehnt.
-- Sobald die benötigten Modelle im Cache liegen, greifen Dokumentverarbeitung und Suche nicht mehr auf das Netzwerk zu.
+- Sobald die benötigten Modelle im Cache liegen, greifen Dokumentverarbeitung und Suche nicht mehr auf das Netzwerk zu, sofern `RAG_RERANK_CMD` nicht einen Befehl benennt, der das tut.
 - Der Server ist für einen einzelnen lokalen Benutzer ausgelegt und bietet keine Authentifizierung oder Zugriffskontrolle.
 - Mehrere CLI- oder MCP-Schreibprozesse dürfen nicht gleichzeitig denselben `DB_PATH` verwenden. Reine Leseabfragen sind während einer Synchronisierung möglich.
 - Sichere den Index, indem du das `DB_PATH`-Verzeichnis kopierst, während kein Schreibprozess läuft.

@@ -3,6 +3,7 @@
 import { MAX_CHUNK_MIN_LENGTH, MAX_FILE_SIZE_LIMIT } from '../utils/limits.js'
 import { checkSensitivePath } from '../utils/sensitive-path.js'
 import { isQualityProfile, type QualityProfile } from '../utils/visual-profile.js'
+import type { GroupingMode } from '../vectordb/index.js'
 
 // ============================================
 // Validation Helpers
@@ -124,6 +125,11 @@ export interface ResolvedGlobalConfig {
   dbPath: string
   cacheDir: string
   modelName: string
+  /** Search tuning, read from the same environment variables the MCP server uses. */
+  maxDistance?: number
+  grouping?: GroupingMode
+  maxFiles?: number
+  hybridWeight?: number
 }
 
 // ============================================
@@ -230,6 +236,64 @@ export function parseGlobalOptions(args: string[]): ParsedGlobalResult {
  * Resolve global config with priority: CLI flags > environment variables > defaults.
  * Validates all resolved values before returning.
  */
+/** Result of parsing an environment variable. */
+export interface ParseResult<T> {
+  value: T | undefined
+  warning?: string
+}
+
+/** Parse `RAG_GROUPING`. */
+export function parseGroupingMode(value: string | undefined): ParseResult<GroupingMode> {
+  if (!value) {
+    return { value: undefined }
+  }
+  const normalized = value.toLowerCase().trim()
+  if (normalized === 'similar' || normalized === 'related') {
+    return { value: normalized }
+  }
+  const warning = `Invalid RAG_GROUPING value: "${value.slice(0, 100)}". Expected "similar" or "related". Ignoring.`
+  return { value: undefined, warning }
+}
+
+/** Parse `RAG_MAX_DISTANCE`. */
+export function parseMaxDistance(value: string | undefined): ParseResult<number> {
+  if (!value) {
+    return { value: undefined }
+  }
+  const parsed = Number.parseFloat(value)
+  if (Number.isNaN(parsed) || parsed <= 0 || !Number.isFinite(parsed)) {
+    const warning = `Invalid RAG_MAX_DISTANCE value: "${value.slice(0, 100)}". Expected positive number. Ignoring.`
+    return { value: undefined, warning }
+  }
+  return { value: parsed }
+}
+
+/** Parse `RAG_MAX_FILES`. */
+export function parseMaxFiles(value: string | undefined): ParseResult<number> {
+  if (!value) {
+    return { value: undefined }
+  }
+  const parsed = Number.parseInt(value, 10)
+  if (Number.isNaN(parsed) || parsed < 1) {
+    const warning = `Invalid RAG_MAX_FILES value: "${value.slice(0, 100)}". Expected positive integer (>= 1). Ignoring.`
+    return { value: undefined, warning }
+  }
+  return { value: parsed }
+}
+
+/** Parse `RAG_HYBRID_WEIGHT`. */
+export function parseHybridWeight(value: string | undefined): ParseResult<number> {
+  if (!value) {
+    return { value: undefined }
+  }
+  const parsed = Number.parseFloat(value)
+  if (Number.isNaN(parsed) || parsed < 0 || parsed > 1) {
+    const warning = `Invalid RAG_HYBRID_WEIGHT value: "${value.slice(0, 100)}". Expected 0.0-1.0. Using default (0.6).`
+    return { value: undefined, warning }
+  }
+  return { value: parsed }
+}
+
 export function resolveGlobalConfig(options: GlobalOptions): ResolvedGlobalConfig {
   const dbPath = options.dbPath ?? process.env['DB_PATH'] ?? GLOBAL_DEFAULTS.dbPath
   const cacheDir = options.cacheDir ?? process.env['CACHE_DIR'] ?? GLOBAL_DEFAULTS.cacheDir
@@ -255,7 +319,31 @@ export function resolveGlobalConfig(options: GlobalOptions): ResolvedGlobalConfi
     process.exit(1)
   }
 
-  return { dbPath, cacheDir, modelName }
+  // stderr, so a JSON-output subcommand keeps stdout parseable.
+  const maxDistance = parseMaxDistance(process.env['RAG_MAX_DISTANCE'])
+  const grouping = parseGroupingMode(process.env['RAG_GROUPING'])
+  const maxFiles = parseMaxFiles(process.env['RAG_MAX_FILES'])
+  const hybridWeight = parseHybridWeight(process.env['RAG_HYBRID_WEIGHT'])
+  for (const { warning } of [maxDistance, grouping, maxFiles, hybridWeight]) {
+    if (warning !== undefined) {
+      console.error(`Warning: ${warning}`)
+    }
+  }
+
+  const config: ResolvedGlobalConfig = { dbPath, cacheDir, modelName }
+  if (maxDistance.value !== undefined) {
+    config.maxDistance = maxDistance.value
+  }
+  if (grouping.value !== undefined) {
+    config.grouping = grouping.value
+  }
+  if (maxFiles.value !== undefined) {
+    config.maxFiles = maxFiles.value
+  }
+  if (hybridWeight.value !== undefined) {
+    config.hybridWeight = hybridWeight.value
+  }
+  return config
 }
 
 /**
