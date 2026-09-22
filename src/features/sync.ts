@@ -20,6 +20,7 @@
 import { isManagedRawDataPath } from '../utils/raw-data-utils.js'
 import type { ScanEntryKind } from '../utils/scan.js'
 import { isUnderOrEqual } from '../utils/scope-match.js'
+import { acquireSyncLock, releaseSyncLock } from '../utils/sync-lock.js'
 import { toSyncPathKey } from '../utils/sync-path-key.js'
 import { isQualityProfile, type QualityProfile } from '../utils/visual-profile.js'
 
@@ -754,6 +755,37 @@ async function gatherSyncInputs(input: RunSyncInput): Promise<GatherOutcome> {
  * `ingestFile` nor `optimize`, so a true no-op never loads the model.
  */
 export async function runSync(input: RunSyncInput): Promise<SyncResult> {
+  // Cross-process mutex (see utils/sync-lock.ts): the CLI `sync`, the MCP
+  // `sync_start`, and every auto-sync runner share one LanceDB, and the
+  // in-process mutation guard cannot see other processes. A loser reports the
+  // same envelope a gathering failure does.
+  if (!(await acquireSyncLock(input.dbPath))) {
+    return {
+      upserted: 0,
+      skipped: 0,
+      empty: 0,
+      pruned: 0,
+      prunedPaths: [],
+      coverage: {
+        unreadableDirs: [],
+        depthLimitedDirs: [],
+        skippedSymlinks: [],
+        oversizedFiles: [],
+      },
+      error: {
+        message: 'another sync is already running (cross-process sync lock held)',
+        filePath: null,
+      },
+    }
+  }
+  try {
+    return await runSyncLocked(input)
+  } finally {
+    await releaseSyncLock(input.dbPath)
+  }
+}
+
+async function runSyncLocked(input: RunSyncInput): Promise<SyncResult> {
   const gathered = await gatherSyncInputs(input)
   if (!gathered.ok) {
     return {
