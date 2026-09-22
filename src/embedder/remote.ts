@@ -42,11 +42,11 @@ export interface RemoteEmbedderConfig {
 
 // ============================================
 // Retry (exponential backoff + full jitter)
-// ============================================
-
-const MAX_RETRIES = 3
-const INITIAL_BACKOFF_MS = 500
-const MAX_BACKOFF_MS = 8000
+// 隧道（frp 链路）存在 ~30s 的周期性失败窗口（约 90-110s 一个周期），窗口内 POST 全挂。
+// 重试序列必须能跨越窗口：4 次重试 × max 20s 背靠背 ≈ 最长 ~70s 的覆盖跨度。
+const MAX_RETRIES = 4
+const INITIAL_BACKOFF_MS = 2000
+const MAX_BACKOFF_MS = 20000
 
 function isRetryableError(e: unknown): boolean {
   // Client errors (401/403/404/422) never succeed on retry; network-level
@@ -209,7 +209,13 @@ export class RemoteEmbedder {
     return withTimeout(async (signal) => {
       const res = await fetch(`${this.config.serverUrl}/embed`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Keep-alive reuse across batches races with the frp-relayed tunnel
+          // (connection state dropped between requests -> ECONNRESET). A fresh
+          // connection per batch costs one handshake and sidesteps it entirely.
+          Connection: 'close',
+        },
         body: JSON.stringify({ inputs }),
         signal,
       })

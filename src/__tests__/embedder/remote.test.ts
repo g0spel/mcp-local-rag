@@ -97,7 +97,7 @@ describe('RemoteEmbedder', () => {
     const fetchMock = vi.fn(async () => statusResponse(500, 'boom'))
     vi.stubGlobal('fetch', fetchMock)
     await expect(e.embed('hello')).rejects.toThrow(RemoteEmbeddingRetryableError)
-    expect(fetchMock).toHaveBeenCalledTimes(4) // 1 initial + 3 retries
+    expect(fetchMock).toHaveBeenCalledTimes(5) // 1 initial + 4 retries
   }, 15_000)
 
   it('does NOT retry client errors (401)', async () => {
