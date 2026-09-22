@@ -98,7 +98,7 @@ describe('RemoteEmbedder', () => {
     vi.stubGlobal('fetch', fetchMock)
     await expect(e.embed('hello')).rejects.toThrow(RemoteEmbeddingRetryableError)
     expect(fetchMock).toHaveBeenCalledTimes(5) // 1 initial + 4 retries
-  }, 15_000)
+  }, 40_000) // 重试序列（2s 起步 ×4 次 max 20s + jitter）+ mock 开销，15s 已不够
 
   it('does NOT retry client errors (401)', async () => {
     const e = await makeInitializedEmbedder()
