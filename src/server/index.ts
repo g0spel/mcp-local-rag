@@ -1,6 +1,7 @@
 // RAGServer implementation with MCP tools
 
 import { randomUUID } from 'node:crypto'
+import type { FSWatcher } from 'node:fs'
 import { readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { resolve, sep } from 'node:path'
@@ -486,12 +487,12 @@ export class RAGServer {
    */
   async initialize(): Promise<void> {
     await this.vectorStore.initialize()
-    const watchers = startAutoSyncWatch({
+    this.autoSyncWatchers = startAutoSyncWatch({
       baseDirs: this.baseDirs,
       onDriftSignal: () => this.maybeAutoSync(),
       onError: (message) => console.error(message),
     })
-    if (watchers.length > 0) {
+    if (this.autoSyncWatchers.length > 0) {
       console.error('Auto-sync: watching document roots for changes')
     }
     console.error('RAGServer initialized')
@@ -1146,10 +1147,13 @@ export class RAGServer {
   // ============================================
   // Auto-sync: reconcile the index before reads when documents changed
   // ============================================
-
   private lastAutoSyncFingerprint: string | null = null
   private autoSyncQueued: boolean = false
   private lastAutoSyncAttempt = 0
+  /** Started by initialize(), stopped by close() — leaked watchers keep
+   * receiving events (and Linux recursive-watch scans can then hit torn-down
+   * or unreadable fixtures, surfacing as unhandled EACCES after the test). */
+  private autoSyncWatchers: FSWatcher[] = []
 
   private async computeDocsFingerprint(): Promise<string | null> {
     const parts: string[] = []
@@ -1435,6 +1439,14 @@ export class RAGServer {
    * Stop the server and release resources
    */
   async close(): Promise<void> {
+    for (const watcher of this.autoSyncWatchers) {
+      try {
+        watcher.close()
+      } catch {
+        // A watcher that already failed must not block the rest of teardown.
+      }
+    }
+    this.autoSyncWatchers = []
     await this.server.close()
     await this.vectorStore.close()
     await this.embedder.dispose()
