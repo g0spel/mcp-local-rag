@@ -22,11 +22,14 @@ import type { Captioner, CaptionerConfig } from './types.js'
  * win. Safe for the current one-captioner-per-run usage.
  */
 export function createCaptioner(config: CaptionerConfig): Captioner {
-  // Defensive ordering: set the global cacheDir at construction so the very
-  // first `from_pretrained` call sees the right value. Setting the same
-  // global twice with the same value is idempotent (shared with the
-  // embedder).
+  // Defensive ordering: set the global cache + local-model paths at
+  // construction so the very first `from_pretrained` call sees the right
+  // value. Setting the same global twice with the same value is idempotent
+  // (shared with the embedder). transformers >=4.3 resolves models through
+  // env.localModelPath (its default lives inside node_modules), so setting
+  // only cacheDir made fresh installs re-download into the package directory.
   env.cacheDir = config.cacheDir
+  env.localModelPath = config.cacheDir
   if (process.env['HF_ENDPOINT']) {
     env.remoteHost = process.env['HF_ENDPOINT']
   }

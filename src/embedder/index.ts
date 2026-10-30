@@ -298,8 +298,12 @@ export class Embedder {
       return
     }
 
-    // Set cache directory BEFORE creating pipeline
+    // Set cache + local-model directories BEFORE creating pipeline. transformers
+    // >=4.3 resolves models through env.localModelPath (its default is a path
+    // inside node_modules), not env.cacheDir — without this, every fresh
+    // install re-downloads the model into the package directory.
     env.cacheDir = this.config.cacheDir
+    env.localModelPath = this.config.cacheDir
     if (process.env['HF_ENDPOINT']) {
       env.remoteHost = process.env['HF_ENDPOINT']
     }
