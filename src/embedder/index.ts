@@ -15,6 +15,7 @@ import {
   type PretrainedConfig,
   pipeline,
 } from '@huggingface/transformers'
+
 import { AppError, toError } from '../utils/errors.js'
 import { isObjectLike } from '../utils/type-guards.js'
 import {
@@ -22,7 +23,6 @@ import {
   type ModelPrompts,
   resolveModelSettings,
 } from './sentence-transformers-config.js'
-
 // ============================================
 // Type Definitions
 // ============================================

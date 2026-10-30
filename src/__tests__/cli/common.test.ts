@@ -54,7 +54,13 @@ function makeConfig(overrides: Partial<ResolvedGlobalConfig> = {}): ResolvedGlob
 // ============================================
 
 describe('cli/common', () => {
+  const savedServerUrl = process.env['RAG_EMBEDDING_SERVER_URL']
+  // These cases pin the LOCAL Embedder branch of the fork's factory. A
+  // RAG_EMBEDDING_SERVER_URL inherited from the runner would divert every call
+  // to RemoteEmbedder and the Embedder mock would never fire (the remote
+  // branch has its own suite in embedder/remote.test.ts).
   beforeAll(async () => {
+    delete process.env['RAG_EMBEDDING_SERVER_URL']
     vi.resetModules()
     vi.doMock('../../vectordb/index.js', vectordbFactory)
     vi.doMock('../../embedder/index.js', embedderFactory)
@@ -64,6 +70,9 @@ describe('cli/common', () => {
   })
 
   afterAll(() => {
+    if (savedServerUrl !== undefined) {
+      process.env['RAG_EMBEDDING_SERVER_URL'] = savedServerUrl
+    }
     for (const p of MOCKED_PATHS) {
       vi.doUnmock(p)
     }

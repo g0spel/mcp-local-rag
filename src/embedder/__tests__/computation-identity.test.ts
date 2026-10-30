@@ -384,53 +384,42 @@ describe('Embedder computation identity', () => {
     }
   }, 180_000)
 
-  it('does not share snapshots when local and cache model copies disagree', async () => {
+  it('republishes instead of reusing snapshots when model assets change on disk', async () => {
     const transformers = await import('@huggingface/transformers')
     const previousEnvironment = {
       cacheDir: transformers.env.cacheDir,
       localModelPath: transformers.env.localModelPath,
       remoteHost: transformers.env.remoteHost,
     }
-    const localModelDir = join(TEST_ROOT, 'local-assets', MODEL_PATH)
-    const localTokenizerPath = join(localModelDir, 'tokenizer.json')
     const dbPath = join(TEST_ROOT, 'db')
-    const filePath = join(TEST_ROOT, 'ambiguous-document.md')
+    const filePath = join(TEST_ROOT, 'asset-drift-document.md')
     const snapshotPath = embeddingSnapshotPath(dbPath, filePath)
     let first: Embedder | null = null
     let second: Embedder | null = null
 
-    mkdirSync(localModelDir, { recursive: true })
-    for (const name of ['config.json', 'tokenizer.json', 'tokenizer_config.json']) {
-      cpSync(join(SOURCE_MODEL_DIR, name), join(localModelDir, name))
-    }
-    symlinkSync(join(SOURCE_MODEL_DIR, 'onnx'), join(localModelDir, 'onnx'), 'dir')
-    // The pipeline resolves this model ID from the cache when both locations
-    // exist. Give the local candidate a different tokenizer to expose ambiguity.
-    swapCatAndDogTokenIds(localTokenizerPath)
     try {
-      transformers.env.localModelPath = join(TEST_ROOT, 'local-assets')
       const { Embedder: EmbedderClass } = await import('../index.js')
+      // The fork pins env.localModelPath to config.cacheDir (transformers >=4.3
+      // resolves models through it), so there is a single provable asset root:
+      // phase 1 publishes a snapshot under that identity.
       first = new EmbedderClass(createEmbedderConfig())
-      expect(await first.getComputationIdentity()).toBeNull()
-      const firstInference = vi.spyOn(first, 'embedBatch')
-      const firstSession = new DocumentEmbeddingSession(dbPath, filePath, first)
-      const original = await firstSession.embedBatch([TEXT], 'document')
-      await firstSession.publish()
-      expect(firstInference).toHaveBeenCalledOnce()
-      expect(existsSync(snapshotPath)).toBe(false)
+      const firstRun = await runSessionWithCurrentIdentity(first, dbPath, filePath, null)
+      expect(existsSync(snapshotPath)).toBe(true)
 
-      // Make the cache match the local candidate. The next pipeline loads a
-      // different tokenizer and must infer rather than reuse the first output.
-      cpSync(localTokenizerPath, TOKENIZER_PATH)
+      // Phase 2: mutate the cached tokenizer that the fingerprint hashes. The
+      // next embedder proves a DIFFERENT identity, so the published snapshot
+      // must not be reused — the document is re-embedded with the drifted
+      // assets and the vectors genuinely differ.
+      swapCatAndDogTokenIds()
       second = new EmbedderClass(createEmbedderConfig())
-      expect(await second.getComputationIdentity()).toBeNull()
-      const secondInference = vi.spyOn(second, 'embedBatch')
-      const secondSession = new DocumentEmbeddingSession(dbPath, filePath, second)
-      const current = await secondSession.embedBatch([TEXT], 'document')
-      await secondSession.publish()
-      expect(secondInference).toHaveBeenCalledOnce()
-      expect(existsSync(snapshotPath)).toBe(false)
-      expect(maximumVectorDifference(original[0] ?? [], current[0] ?? [])).toBeGreaterThan(0.01)
+      const secondRun = await runSessionWithCurrentIdentity(
+        second,
+        dbPath,
+        filePath,
+        firstRun.identity
+      )
+      expect(existsSync(snapshotPath)).toBe(true)
+      expect(maximumVectorDifference(firstRun.vector, secondRun.vector)).toBeGreaterThan(0.01)
     } finally {
       try {
         await first?.dispose()
