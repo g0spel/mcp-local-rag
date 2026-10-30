@@ -194,9 +194,6 @@ export class RemoteEmbedder {
     console.error(
       `RemoteEmbedder: connected to "${this.config.serverUrl}" (dimension ${this.dims}, model ${server.modelId ?? 'unknown'}, max input ${this.maxInputTokens ?? 'unknown'} tokens)`
     )
-    console.error(
-      `RemoteEmbedder: connected to "${this.config.serverUrl}" (dimension ${this.dims}, max input ${this.maxInputTokens ?? 'unknown'} tokens)`
-    )
   }
 
   /** Best-effort `GET /info`: input cap + serving-model identity for reuse. */
@@ -261,17 +258,18 @@ export class RemoteEmbedder {
   /**
    * `PersistentEmbeddingProvider` member: the serving model's identity from
    * `/info` (model id + sha + endpoint), so embedding snapshots taken against
-   * one server are never reused against another. `null` before initialize.
+   * one server are never reused against another. A server that did not expose
+   * its model id cannot prove which model served — `null` disables snapshot
+   * reuse (re-embed) rather than risking a shared fake fingerprint across
+   * different models behind the same flaky `/info`.
    */
   async getComputationIdentity(): Promise<EmbeddingComputationIdentity | null> {
     await this.initialize()
-    if (this.dims === null) {
+    if (this.dims === null || this.serverModelId === null) {
       return null
     }
-    const model = this.serverModelId ?? 'unknown'
-    const sha = this.serverModelSha ?? 'unpinned'
     return {
-      fingerprint: `remote:${this.config.serverUrl}:${model}@${sha}`,
+      fingerprint: `remote:${this.config.serverUrl}:${this.serverModelId}@${this.serverModelSha ?? 'unpinned'}`,
       dimension: this.dims,
     }
   }
