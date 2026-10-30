@@ -23,24 +23,37 @@ function lockPath(dbPath: string): string {
  * stale lock reports free (the real acquire remains authoritative).
  */
 export async function isSyncLockHeld(dbPath: string): Promise<boolean> {
+  const owner = await readLockOwner(dbPath)
+  if (owner === null || owner === process.pid) {
+    return false
+  }
+  return isProcessAlive(owner)
+}
+
+/** The holder PID recorded in the lock file, or null when absent/unreadable. */
+async function readLockOwner(dbPath: string): Promise<number | null> {
   try {
     const owner = Number.parseInt(
       (await readFile(lockPath(dbPath), 'utf8')).split(' ')[0] ?? '',
       10
     )
-    if (!Number.isFinite(owner) || owner === process.pid) {
-      return false
-    }
-    try {
-      process.kill(owner, 0)
-      return true // live foreign holder
-    } catch (error) {
-      // ESRCH: the holder is gone (stale lock, the real acquire will steal it).
-      // EPERM: exists but not ours to signal — that still proves it is alive.
-      return errorCode(error) === 'EPERM'
-    }
+    return Number.isFinite(owner) ? owner : null
   } catch {
-    return false // no lock file
+    return null // no lock file
+  }
+}
+
+/**
+ * Liveness via signal 0. EPERM means the target exists but is not ours to
+ * signal (e.g. another uid's process) — that still proves it is alive, so a
+ * live holder is never mistaken for a stale lock and stolen from.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0) // no-op probe
+    return true
+  } catch (error) {
+    return errorCode(error) === 'EPERM'
   }
 }
 
@@ -48,14 +61,9 @@ export async function isSyncLockHeld(dbPath: string): Promise<boolean> {
 export async function acquireSyncLock(dbPath: string): Promise<boolean> {
   const path = lockPath(dbPath)
   try {
-    const owner = Number.parseInt((await readFile(path, 'utf8')).split(' ')[0] ?? '', 10)
-    if (Number.isFinite(owner)) {
-      try {
-        process.kill(owner, 0) // liveness probe: signal 0 is a no-op
-        return false // holder still alive — real contention
-      } catch {
-        // ESRCH: holder is gone — zombie lock, steal it below.
-      }
+    const owner = await readLockOwner(dbPath)
+    if (owner !== null && owner !== process.pid && isProcessAlive(owner)) {
+      return false // holder still alive — real contention
     }
     await unlink(path).catch(() => {})
   } catch {

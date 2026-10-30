@@ -1435,20 +1435,33 @@ export class RAGServer {
       },
     }
 
-    const result = await runSync({
-      roots: this.rawBaseDirs,
-      // The realpath'd counterpart of the same roots, which is what the core
-      // decides requested-path containment in (the parser's boundary domain).
-      canonicalRoots: this.baseDirs,
-      dbPath: this.dbPath,
-      excludePaths: this.scanExclusion.prefixes,
-      platform: process.platform,
-      // resolve() (never realpath) so the requested path is spelled like the
-      // stored DB keys; the core validates it against the configured roots.
-      ...(requestedPath === undefined ? {} : { requestedPath: resolve(requestedPath) }),
-      ...(this.storeImages ? { images: true } : {}),
-      collaborators,
-    })
+    // Heartbeat: a long run (large-file embedding can take minutes) does not
+    // touch per-file counters between files, so the state file's updatedAt
+    // would go stale and out-of-band observers (status bar) drop the running
+    // state on their age cap. Refreshing updatedAt every 30s keeps a live run
+    // visible while a dead server's orphaned running state still ages out.
+    const heartbeat = setInterval(() => {
+      this.updateSyncJob(jobId, {})
+    }, 30_000)
+    let result: Awaited<ReturnType<typeof runSync>>
+    try {
+      result = await runSync({
+        roots: this.rawBaseDirs,
+        // The realpath'd counterpart of the same roots, which is what the core
+        // decides requested-path containment in (the parser's boundary domain).
+        canonicalRoots: this.baseDirs,
+        dbPath: this.dbPath,
+        excludePaths: this.scanExclusion.prefixes,
+        platform: process.platform,
+        // resolve() (never realpath) so the requested path is spelled like the
+        // stored DB keys; the core validates it against the configured roots.
+        ...(requestedPath === undefined ? {} : { requestedPath: resolve(requestedPath) }),
+        ...(this.storeImages ? { images: true } : {}),
+        collaborators,
+      })
+    } finally {
+      clearInterval(heartbeat)
+    }
 
     this.updateSyncJob(
       jobId,
