@@ -24,6 +24,16 @@ export function testModelCacheDir(isolatedPath?: string): string {
   return isolatedPath
 }
 
+/**
+ * The fork's primary embedding mode: a TEI-compatible endpoint, when one is
+ * configured (RAG_EMBEDDING_SERVER_URL). Tests that need real embeddings
+ * should prefer it and fall back to the pre-warmed local cache — never a
+ * mid-run model download (see setup/no-remote-models.ts).
+ */
+export function testEmbeddingServerUrl(): string | undefined {
+  const url = process.env['RAG_EMBEDDING_SERVER_URL']
+  return url !== undefined && url.length > 0 ? url : undefined
+}
 // Test runners own device selection. Passing through this helper deliberately
 // overrides any fixture-local device so CPU/WebGPU runs exercise the same tests.
 export function withTestDevice<T extends object>(config: T): T & { device: string } {

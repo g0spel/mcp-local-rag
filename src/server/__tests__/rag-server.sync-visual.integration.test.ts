@@ -16,7 +16,11 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildPdfWithImageBytes } from '../../__tests__/pdf-image-fixture.js'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import {
+  testEmbeddingServerUrl,
+  testModelCacheDir,
+  withTestDevice,
+} from '../../__tests__/test-device.js'
 import { parseJson, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import type { SyncStatusResult } from '../types.js'
@@ -125,11 +129,16 @@ async function hasStoredCaption(testCase: Case): Promise<boolean> {
 
 /** A real server over the case fixture, with only the embedder stubbed. */
 async function makeServer(testCase: Case): Promise<ServerInstance> {
+  const remoteUrl = testEmbeddingServerUrl()
   const server = new RAGServer(
     withTestDevice({
       dbPath: testCase.dbPath,
       modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: testCase.cacheDir,
+      // The stubbed captioner/embedder never runs for real, but containment
+      // still resolves the token cap: prefer the fork's primary TEI endpoint
+      // when configured, else the pre-warmed shared cache (never a download).
+      cacheDir: remoteUrl === undefined ? testModelCacheDir(testCase.cacheDir) : testCase.cacheDir,
+      ...(remoteUrl === undefined ? {} : { embeddingServerUrl: remoteUrl }),
       baseDirs: [testCase.root],
       maxFileSize: 100 * 1024 * 1024,
     })

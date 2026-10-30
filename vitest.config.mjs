@@ -4,6 +4,8 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // Local-model tests must never fetch weights mid-run (fail fast instead).
+    setupFiles: ['./src/__tests__/setup/no-remote-models.ts'],
     // Process management improvements
     testTimeout: 10000,
     teardownTimeout: 5000,     // Teardown timeout 5 seconds

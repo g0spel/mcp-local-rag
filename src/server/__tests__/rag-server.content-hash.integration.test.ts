@@ -24,8 +24,11 @@ import { createHash } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import {
+  testEmbeddingServerUrl,
+  testModelCacheDir,
+  withTestDevice,
+} from '../../__tests__/test-device.js'
 import { expectInstanceOf, parseJson, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import type { SyncStatusResult } from '../types.js'
@@ -114,11 +117,15 @@ async function makeServer(
   fixture: Fixture,
   maxFileSize = 100 * 1024 * 1024
 ): Promise<ServerInstance> {
+  const remoteUrl = testEmbeddingServerUrl()
   const server = new RAGServer(
     withTestDevice({
       dbPath: fixture.dbPath,
       modelName: 'Xenova/all-MiniLM-L6-v2',
-      cacheDir: fixture.cacheDir,
+      // Real embeddings go to the fork's primary TEI endpoint when configured;
+      // otherwise the pre-warmed shared cache (never a mid-run download).
+      cacheDir: remoteUrl === undefined ? testModelCacheDir(fixture.cacheDir) : fixture.cacheDir,
+      ...(remoteUrl === undefined ? {} : { embeddingServerUrl: remoteUrl }),
       baseDirs: [fixture.root],
       maxFileSize,
     })

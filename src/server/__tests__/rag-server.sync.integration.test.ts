@@ -16,7 +16,11 @@ import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { withTestDevice } from '../../__tests__/test-device.js'
+import {
+  testEmbeddingServerUrl,
+  testModelCacheDir,
+  withTestDevice,
+} from '../../__tests__/test-device.js'
 import { parseJson, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import { isRecord } from '../../utils/type-guards.js'
@@ -221,13 +225,16 @@ async function storedPaths(fixture: Fixture): Promise<string[]> {
  * path, and job-state correctness is what these tests are about.
  */
 async function makeServer(fixture: Fixture): Promise<ServerInstance> {
+  const remoteUrl = testEmbeddingServerUrl()
   const server = new RAGServer(
     withTestDevice({
       dbPath: fixture.dbPath,
       modelName: 'Xenova/all-MiniLM-L6-v2',
-      // Fixture-local: the stubbed embedder never loads a model, and the walker
-      // must be shown excluding this exact directory.
-      cacheDir: fixture.cacheDir,
+      // The stubbed embedder never embeds for real, but containment still
+      // resolves the token cap: prefer the fork's primary TEI endpoint when
+      // configured, else the pre-warmed shared cache (never a mid-run download).
+      cacheDir: remoteUrl === undefined ? testModelCacheDir(fixture.cacheDir) : fixture.cacheDir,
+      ...(remoteUrl === undefined ? {} : { embeddingServerUrl: remoteUrl }),
       baseDirs: fixture.roots,
       maxFileSize: 100 * 1024 * 1024,
     })
@@ -395,8 +402,9 @@ describe('MCP sync tools', () => {
         error: null,
       })
       // The scan is parked at its first call, so no file has been hashed and
-      // nothing has been written.
-      expect(scanArgs).toHaveLength(1)
+      // nothing has been written. The run is fire-and-forget from sync_start,
+      // so reaching the parked call can race a fast dispatcher: wait for it.
+      await vi.waitFor(() => expect(scanArgs).toHaveLength(1))
       const statusBlock = parseJson<{
         chunkCount: number
       }>(firstBlock(await dispatch(server, 'status', {})))

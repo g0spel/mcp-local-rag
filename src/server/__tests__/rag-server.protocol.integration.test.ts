@@ -13,7 +13,11 @@ import {
   ProgressNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
+import {
+  testEmbeddingServerUrl,
+  testModelCacheDir,
+  withTestDevice,
+} from '../../__tests__/test-device.js'
 import { parseJson, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import type { VectorChunk, VectorStore } from '../../vectordb/index.js'
@@ -505,9 +509,15 @@ describe('SYNC-006 / SYNC-007: sync tools over the MCP SDK protocol', () => {
       withTestDevice({
         dbPath: join(MCP_TMP_ROOT, 'db'),
         modelName: 'Xenova/all-MiniLM-L6-v2',
-        // Fixture-local: the stubbed embedder never loads a model, and neither
-        // the db nor the cache may sit inside the scanned root.
-        cacheDir: join(MCP_TMP_ROOT, 'cache'),
+        // The stubbed embedder never loads a model, and neither the db nor
+        // the cache may sit inside the scanned root. Containment still needs
+        // the token cap: TEI first, else the pre-warmed shared cache.
+        ...(testEmbeddingServerUrl() === undefined
+          ? { cacheDir: testModelCacheDir(join(MCP_TMP_ROOT, 'cache')) }
+          : {
+              cacheDir: join(MCP_TMP_ROOT, 'cache'),
+              embeddingServerUrl: testEmbeddingServerUrl(),
+            }),
         baseDirs: [MCP_ROOT_DIR],
         maxFileSize: 100 * 1024 * 1024,
       })
