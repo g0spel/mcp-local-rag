@@ -15,6 +15,35 @@ function lockPath(dbPath: string): string {
   return resolve(dbPath, '..', 'sync.lock')
 }
 
+/**
+ * Read-only contention check: a live foreign holder exists. Used to reject a
+ * `sync_start` (and skip its state-file writes) BEFORE registering a job, so a
+ * cross-process loser never overwrites the holder's running/terminal state in
+ * the shared sync-state file. Does not take or steal the lock; a missing or
+ * stale lock reports free (the real acquire remains authoritative).
+ */
+export async function isSyncLockHeld(dbPath: string): Promise<boolean> {
+  try {
+    const owner = Number.parseInt(
+      (await readFile(lockPath(dbPath), 'utf8')).split(' ')[0] ?? '',
+      10
+    )
+    if (!Number.isFinite(owner) || owner === process.pid) {
+      return false
+    }
+    try {
+      process.kill(owner, 0)
+      return true // live foreign holder
+    } catch (error) {
+      // ESRCH: the holder is gone (stale lock, the real acquire will steal it).
+      // EPERM: exists but not ours to signal — that still proves it is alive.
+      return errorCode(error) === 'EPERM'
+    }
+  } catch {
+    return false // no lock file
+  }
+}
+
 /** Try to take the cross-process sync lock. `false` = another live holder. */
 export async function acquireSyncLock(dbPath: string): Promise<boolean> {
   const path = lockPath(dbPath)

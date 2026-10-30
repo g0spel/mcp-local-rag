@@ -77,6 +77,7 @@ import {
   type ScanExclusion,
 } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
+import { isSyncLockHeld } from '../utils/sync-lock.js'
 import { isRecord } from '../utils/type-guards.js'
 import { type VectorChunk, VectorStore, type VisualAttachment } from '../vectordb/index.js'
 import { DatabaseError } from '../vectordb/types.js'
@@ -1267,9 +1268,27 @@ export class RAGServer {
     scan().catch(() => {})
   }
 
-  async handleSyncStart(input: SyncStartInput): Promise<{ content: RagTextContentBlock[] }> {
+  async handleSyncStart(
+    input: SyncStartInput
+  ): Promise<{ content: RagTextContentBlock[]; isError?: true }> {
     // Root-dependent tool: fail fast on configError before registering a job.
     this.assertConfigOk()
+
+    // A live cross-process holder owns the lock: reject BEFORE registering a
+    // job. The shared sync-state file belongs to the holder's run — a loser
+    // writing its own running/failed state there is what made concurrent
+    // windows overwrite each other's status.
+    if (await isSyncLockHeld(this.dbPath)) {
+      return {
+        content: this.withWarnings([
+          {
+            type: 'text',
+            text: 'Another process holds the cross-process sync lock for this database. Poll its sync_status instead of starting a competing run.',
+          },
+        ]),
+        isError: true,
+      }
+    }
 
     const jobId = randomUUID()
     this.syncJob = {
@@ -1317,12 +1336,20 @@ export class RAGServer {
   }
 
   /** Patch the current job, ignoring a write aimed at a record already replaced. */
-  private updateSyncJob(jobId: string, patch: Partial<SyncStatusResult>): void {
+  private updateSyncJob(
+    jobId: string,
+    patch: Partial<SyncStatusResult>,
+    options: { persist?: boolean } = {}
+  ): void {
     if (this.syncJob === null || this.syncJob.jobId !== jobId) {
       return
     }
     this.syncJob = { ...this.syncJob, ...patch }
-    this.writeSyncStateFile()
+    // persist:false keeps the update in memory only — used for cross-process
+    // lock contention, where the shared state file belongs to the holder.
+    if (options.persist !== false) {
+      this.writeSyncStateFile()
+    }
   }
 
   /**
@@ -1423,20 +1450,27 @@ export class RAGServer {
       collaborators,
     })
 
-    this.updateSyncJob(jobId, {
-      state: result.error === null ? 'succeeded' : 'failed',
-      // Skips are only known once the plan has run, so the final value can only
-      // grow: a poll never sees `completed` go backwards.
-      completed: result.upserted + result.skipped + result.empty,
-      summary: {
-        upserted: result.upserted,
-        skipped: result.skipped,
-        empty: result.empty,
-        pruned: result.pruned,
+    this.updateSyncJob(
+      jobId,
+      {
+        state: result.error === null ? 'succeeded' : 'failed',
+        // Skips are only known once the plan has run, so the final value can only
+        // grow: a poll never sees `completed` go backwards.
+        completed: result.upserted + result.skipped + result.empty,
+        summary: {
+          upserted: result.upserted,
+          skipped: result.skipped,
+          empty: result.empty,
+          pruned: result.pruned,
+        },
+        warnings: coverageWarnings(result.coverage, this.maxFileSize),
+        error: result.error === null ? null : formatSyncError(result.error),
       },
-      warnings: coverageWarnings(result.coverage, this.maxFileSize),
-      error: result.error === null ? null : formatSyncError(result.error),
-    })
+      // Cross-process contention lost the race between the pre-check and the
+      // real acquire: keep the failure pollable in memory, but leave the
+      // shared state file to the holder's run.
+      { persist: result.error?.lockHeld !== true }
+    )
   }
 
   /**

@@ -134,6 +134,13 @@ export interface SyncError {
   message: string
   /** The file, root, or requested path a failure is attributable to. */
   filePath: string | null
+  /**
+   * True when the run never started because a live cross-process holder owns
+   * the sync lock. This is contention, not a data failure: the caller keeps
+   * its in-memory job state but must not overwrite the holder's state in the
+   * shared sync-state file.
+   */
+  lockHeld?: true
 }
 
 /** Append an attributable path only when the underlying message does not already contain it. */
@@ -775,6 +782,7 @@ export async function runSync(input: RunSyncInput): Promise<SyncResult> {
       error: {
         message: 'another sync is already running (cross-process sync lock held)',
         filePath: null,
+        lockHeld: true,
       },
     }
   }

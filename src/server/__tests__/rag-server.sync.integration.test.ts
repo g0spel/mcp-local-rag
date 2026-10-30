@@ -12,7 +12,7 @@
 // which is the same signal an MCP client has.
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -377,6 +377,27 @@ describe('MCP sync tools', () => {
     scanArgs.length = 0
     scanGate = null
   })
+
+  it('rejects sync_start without touching the shared state file when a live cross-process holder owns the lock', async () => {
+    const fixture = await makeFixture('cross-process-lock-held')
+    const server = await makeServer(fixture)
+    const stateFile = resolve(fixture.dbPath, '..', 'sync-state.json')
+    // Simulate a live foreign holder with PID 1 (init): always alive, never us
+    // (isSyncLockHeld treats our own PID as non-contention).
+    writeFileSync(resolve(fixture.dbPath, '..', 'sync.lock'), `1 ${new Date().toISOString()}\n`)
+    try {
+      const before = existsSync(stateFile) ? readFileSync(stateFile, 'utf8') : null
+      const result = await dispatch(server, 'sync_start', {})
+      expect(result.isError).toBe(true)
+      expect(firstBlock(result)).toContain('cross-process sync lock')
+      // The loser registered no job and left the holder's state file untouched.
+      const after = existsSync(stateFile) ? readFileSync(stateFile, 'utf8') : null
+      expect(after).toBe(before)
+    } finally {
+      await server.close()
+      rmSync(resolve(fixture.dbPath, '..', 'sync.lock'), { force: true })
+    }
+  }, 45000)
 
   // --------------------------------------------
   // Start before work (SYNC-006)
