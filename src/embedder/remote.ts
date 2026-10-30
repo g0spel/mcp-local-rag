@@ -107,6 +107,38 @@ async function withTimeout<T>(
 }
 
 // ============================================
+// Token estimation (containment support)
+// ============================================
+
+/**
+ * Conservative CJK-aware token estimate for a server-side tokenizer we cannot
+ * run locally. Calibrated against the deployment's own tokenizer (XLM-R /
+ * bge-m3): worst observed densities were ~0.76 tokens/char CJK prose, 0.62 for
+ * digit-heavy table rows and 0.46 for code; the experiment-ledger file that
+ * motivated containment measures 0.615 overall. The coefficients deliberately
+ * over-estimate (dense script x1.4, everything else x0.7) so containment
+ * splits too early rather than letting an oversized chunk reach the server.
+ */
+export function estimateTokens(text: string): number {
+  let dense = 0
+  let total = 0
+  for (const ch of text) {
+    total += 1
+    const code = ch.codePointAt(0) ?? 0
+    if (
+      (code >= 0x3040 && code <= 0x30ff) || // kana
+      (code >= 0x3400 && code <= 0x4dbf) || // CJK extension A
+      (code >= 0x4e00 && code <= 0x9fff) || // CJK unified ideographs
+      (code >= 0xac00 && code <= 0xd7af) || // hangul syllables
+      (code >= 0xf900 && code <= 0xfaff) // CJK compatibility ideographs
+    ) {
+      dense += 1
+    }
+  }
+  return Math.ceil(dense * 1.4 + (total - dense) * 0.7)
+}
+
+// ============================================
 // RemoteEmbedder
 // ============================================
 
@@ -116,14 +148,19 @@ async function withTimeout<T>(
  * compute delegated to a self-hosted server.
  *
  * Semantics intentionally aligned with the local class:
- * - `tokenLimit` is always `null` — the remote server owns truncation, which
- *   maps to the local class's "degraded mode" (no cap, no clamp).
+ * - `tokenLimit` mirrors the server's own input cap, probed once from
+ *   `GET /info` (`max_input_length`). When the server does not expose it —
+ *   or a strictly validating server rejects oversized inputs without
+ *   truncating — the cap stays `null` and containment stays off, exactly the
+ *   previous behavior. `getTokenLimit`/`countTokens` implement the chunker's
+ *   optional `EmbedderInterface` members so token containment activates.
  * - `dispose()` is a no-op — no in-process model resources.
  * - `device` / `dtype` / `cacheDir` / `modelPath` are server-side concerns.
  */
 export class RemoteEmbedder {
   private readonly config: RemoteEmbedderConfig
   private dims: number | null = null
+  private maxInputTokens: number | null = null
   private initialized: boolean = false
 
   constructor(config: RemoteEmbedderConfig) {
@@ -146,20 +183,59 @@ export class RemoteEmbedder {
       )
     }
     this.dims = vector.length
+    this.maxInputTokens = await this.probeMaxInputLength()
     this.initialized = true
     console.error(
-      `RemoteEmbedder: connected to "${this.config.serverUrl}" (dimension ${this.dims})`
+      `RemoteEmbedder: connected to "${this.config.serverUrl}" (dimension ${this.dims}, max input ${this.maxInputTokens ?? 'unknown'} tokens)`
     )
+  }
+
+  /** Best-effort `GET /info` → `max_input_length`; failure keeps containment off. */
+  private async probeMaxInputLength(): Promise<number | null> {
+    try {
+      const info: unknown = await withTimeout(async (signal) => {
+        const res = await fetch(`${this.config.serverUrl}/info`, {
+          signal,
+          headers: { Connection: 'close' },
+        })
+        if (!res.ok) {
+          return null
+        }
+        return await res.json()
+      }, 10_000)
+      if (typeof info !== 'object' || info === null || !('max_input_length' in info)) {
+        return null
+      }
+      const cap: unknown = info.max_input_length
+      return typeof cap === 'number' && Number.isFinite(cap) && cap > 0 ? cap : null
+    } catch {
+      return null
+    }
   }
 
   async dispose(): Promise<void> {
     this.initialized = false
     this.dims = null
+    this.maxInputTokens = null
   }
 
-  /** Remote servers decide their own truncation: no local cap, no clamp. */
-  get tokenLimit(): null {
-    return null
+  /** The server's own input cap when `/info` exposed it, else `null`. */
+  get tokenLimit(): number | null {
+    return this.maxInputTokens
+  }
+
+  /** Optional `EmbedderInterface` member: activates the chunker's containment. */
+  async getTokenLimit(): Promise<number | null> {
+    await this.initialize()
+    return this.maxInputTokens
+  }
+
+  /**
+   * Optional `EmbedderInterface` member: conservative local estimate (see
+   * {@link estimateTokens}) — no tokenizer download, no extra server round trip.
+   */
+  async countTokens(texts: string[]): Promise<number[]> {
+    return texts.map((text) => estimateTokens(text))
   }
 
   async embed(text: string): Promise<number[]> {

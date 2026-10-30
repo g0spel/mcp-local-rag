@@ -11,6 +11,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createEmbedder } from '../../cli/common.js'
 import {
+  estimateTokens,
   RemoteEmbedder,
   RemoteEmbeddingError,
   RemoteEmbeddingRetryableError,
@@ -51,10 +52,12 @@ describe('RemoteEmbedder', () => {
     vi.stubGlobal('fetch', fetchMock)
     const e = new RemoteEmbedder(CONFIG)
     await e.initialize()
+    // The mock answers every route with embed-shaped JSON, so /info yields no
+    // max_input_length and the cap stays unknown.
     expect(e.tokenLimit).toBeNull()
     await e.embed('hello')
-    // One probe + one embed = two POSTs total.
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    // Embed probe + /info probe + one embed = three requests total.
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('embedBatch slices by batchSize and preserves order', async () => {
@@ -133,7 +136,75 @@ describe('RemoteEmbedder', () => {
     await e.initialize()
     await e.dispose()
     await e.initialize()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    // Each initialize: embed probe + /info probe.
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('probes max_input_length from /info and exposes it via tokenLimit', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL | Request) =>
+        String(url).endsWith('/info')
+          ? new Response(JSON.stringify({ max_input_length: 512 }), { status: 200 })
+          : okEmbed(DIM_2)
+      )
+    )
+    const e = new RemoteEmbedder(CONFIG)
+    expect(e.tokenLimit).toBeNull() // before initialize
+    await e.initialize()
+    expect(e.tokenLimit).toBe(512)
+    await expect(e.getTokenLimit()).resolves.toBe(512)
+  })
+
+  it('keeps tokenLimit null when /info omits max_input_length', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL | Request) =>
+        String(url).endsWith('/info')
+          ? new Response(JSON.stringify({ model_id: 'x' }), { status: 200 })
+          : okEmbed(DIM_2)
+      )
+    )
+    const e = new RemoteEmbedder(CONFIG)
+    await e.initialize()
+    expect(e.tokenLimit).toBeNull()
+  })
+
+  it('keeps tokenLimit null when /info fails; initialize still succeeds', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL | Request) => {
+        if (String(url).endsWith('/info')) {
+          return statusResponse(500)
+        }
+        return okEmbed(DIM_2)
+      })
+    )
+    const e = new RemoteEmbedder(CONFIG)
+    await e.initialize()
+    expect(e.tokenLimit).toBeNull()
+    await expect(e.embed('hello')).resolves.toEqual([0.1, 0.2])
+  })
+
+  it('countTokens returns conservative estimates without server round trips', async () => {
+    const e = await makeInitializedEmbedder()
+    const [cjk, ascii] = await e.countTokens(['一二三四五', 'abcde'])
+    expect(cjk).toBe(7) // 5 × 1.4 = 7
+    expect(ascii).toBe(4) // 5 × 0.7 = 3.5 → 4
+  })
+})
+
+describe('estimateTokens', () => {
+  it('counts surrogate pairs as one code point', () => {
+    expect(estimateTokens('😀')).toBe(1)
+  })
+
+  it('applies the dense-script coefficient to CJK text', () => {
+    expect(estimateTokens('汉字文本')).toBe(6) // 4 × 1.4 = 5.6 → 6
+  })
+
+  it('applies the other coefficient to digit-heavy table rows', () => {
+    expect(estimateTokens('1234 | 5678')).toBe(8) // 11 × 0.7 = 7.7 → 8
   })
 })
 
