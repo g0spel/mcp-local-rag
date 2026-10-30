@@ -239,6 +239,7 @@ export async function runReadNeighbors(
         text: row.text,
         isTarget: row.chunkIndex === request.chunkIndex,
         fileTitle: row.fileTitle ?? null,
+        ...(row.sourceContext ? { sourceContext: row.sourceContext } : {}),
         ...(sourceForAll ? { source: sourceForAll } : {}),
       }))
 

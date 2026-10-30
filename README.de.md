@@ -4,10 +4,14 @@
 
 # MCP Local RAG
 
-[![GitHub stars](https://img.shields.io/github/stars/shinpr/mcp-local-rag?style=social)](https://github.com/shinpr/mcp-local-rag)
-[![npm version](https://img.shields.io/npm/v/mcp-local-rag.svg)](https://www.npmjs.com/package/mcp-local-rag)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![MCP Registry](https://img.shields.io/badge/MCP-Registry-green.svg)](https://registry.modelcontextprotocol.io/)
+[![GitHub
+stars](https://img.shields.io/github/stars/shinpr/mcp-local-rag?style=social)](https://github.com/shinpr/mcp-local-rag)
+[![npm
+version](https://img.shields.io/npm/v/mcp-local-rag.svg)](https://www.npmjs.com/package/mcp-local-rag)
+[![License:
+MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![MCP
+Registry](https://img.shields.io/badge/MCP-Registry-green.svg)](https://registry.modelcontextprotocol.io/)
 
 <p align="center">
   <a href="README.md">English</a> |
@@ -18,41 +22,53 @@
   <a href="README.fr.md">Français</a>
 </p>
 
-Durchsuche vertrauliche Dokumente über einen MCP-Client oder das Terminal, ohne sie an eine Embedding-API zu senden.
+Durchsuche vertrauliche Dokumente über einen MCP-Client oder das Terminal, ohne sie an eine
+Embedding-API zu senden.
 
-mcp-local-rag indexiert PDF-, DOCX-, Markdown- und Textdateien direkt auf deinem Rechner. Die Suche verbindet semantische Ähnlichkeit mit Stichwortsuche. Dadurch findet sie sowohl sinngleiche Inhalte als auch exakte technische Begriffe wie API-Namen, Klassennamen und Fehlercodes.
+mcp-local-rag indexiert PDF-, DOCX-, Markdown- und Textdateien direkt auf deinem Rechner. Die
+Suche verbindet semantische Ähnlichkeit mit Stichwortsuche. Dadurch findet sie sowohl
+inhaltlich verwandte Inhalte als auch exakte technische Begriffe wie API-Namen, Klassennamen
+und Fehlercodes. Die Treffer enthalten Textstellen aus der Quelle und, sofern verfügbar,
+Überschriften, Zeilen- oder Seitenzahlen. So kannst du im Original nachlesen und die Fundstelle
+zitieren.
 
-## Funktionen
-
-- **Läuft lokal:** Dokument-Parsing, Embeddings, Speicherung und Suche finden auf deinem Rechner statt. Nach dem ersten Modelldownload funktionieren Textimport und Suche offline.
-- **Hybride Suche:** Die semantische Suche findet verwandte Konzepte, während die Stichwortsuche exakte Fachbegriffe höher gewichtet.
-- **Konfigurierbare Embeddings:** Wähle ein Hugging-Face-Embedding-Modell, das zur Sprache und zum Fachgebiet deiner Dokumente passt.
-- **Semantische Aufteilung:** Dokumente werden an Themenwechseln statt nach einer festen Zeichenzahl geteilt. Markdown-Codeblöcke bleiben erhalten.
-- **MCP und CLI:** KI-Programmierwerkzeuge und Terminal greifen auf denselben Index zu.
-
-Es werden weder API-Schlüssel noch Docker, Python oder eine externe Datenbank benötigt.
+Es werden weder API-Schlüssel noch Docker, Python oder eine externe Datenbank benötigt. Nach
+dem ersten Modelldownload funktionieren Textimport und Suche offline.
 
 ## Schnellstart
 
 ### Voraussetzungen
 
-- Node.js 22 oder neuer
+- Node.js 22.20 oder neuer
 - Internetzugang beim ersten Start, um das npm-Paket und das Embedding-Modell herunterzuladen
 - Ein Verzeichnis mit den zu durchsuchenden Dokumenten
 
-Setze `BASE_DIR` auf dieses Verzeichnis. Es bildet zugleich die Sicherheitsgrenze für Dateizugriffe. Ersetze `/absolute/path/to/your/documents` in den folgenden Beispielen durch den absoluten Pfad zu deinen Dokumenten.
+Setze `BASE_DIR` auf dieses Verzeichnis. Es bildet zugleich die Sicherheitsgrenze für
+Dateizugriffe. Ersetze `/absolute/path/to/your/documents` in den folgenden Beispielen durch den
+absoluten Pfad zu deinen Dokumenten.
 
-mcp-local-rag verwendet das Standard-MCP-Protokoll über einen lokalen stdio-Server. Damit funktioniert es mit KI-Programmierwerkzeugen und anderen MCP-Hosts, die lokale MCP-Server unterstützen.
+Nutze eines der folgenden Beispiele oder registriere `npx -y mcp-local-rag` im
+Konfigurationsformat deines Clients und setze dort `BASE_DIR`.
 
-Nutze eines der folgenden Beispiele oder registriere `npx -y mcp-local-rag` im Konfigurationsformat deines Clients und setze dort `BASE_DIR`.
+Setze auch `DB_PATH` und `CACHE_DIR` auf absolute Pfade. Relative Pfade beziehen sich auf das
+Arbeitsverzeichnis des Servers. Wird er aus verschiedenen Projekten gestartet, entstehen
+jeweils ein eigener Index und Modellcache.
 
-**Claude Code:** Führe diesen Befehl aus:
+<details>
+<summary>Claude Code</summary>
+
+Führe diesen Befehl aus:
 
 ```bash
 claude mcp add local-rag --scope user --env BASE_DIR=/absolute/path/to/your/documents -- npx -y mcp-local-rag
 ```
 
-**Codex:** Ergänze `~/.codex/config.toml`:
+</details>
+
+<details>
+<summary>Codex</summary>
+
+Ergänze `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.local-rag]
@@ -63,7 +79,12 @@ args = ["-y", "mcp-local-rag"]
 BASE_DIR = "/absolute/path/to/your/documents"
 ```
 
-**OpenCode:** Ergänze `~/.config/opencode/opencode.json` (oder `opencode.jsonc`):
+</details>
+
+<details>
+<summary>OpenCode</summary>
+
+Ergänze `~/.config/opencode/opencode.json` (oder `opencode.jsonc`):
 
 ```json
 {
@@ -80,7 +101,12 @@ BASE_DIR = "/absolute/path/to/your/documents"
 }
 ```
 
-**Cursor:** Ergänze `~/.cursor/mcp.json`:
+</details>
+
+<details>
+<summary>Cursor</summary>
+
+Ergänze `~/.cursor/mcp.json`:
 
 ```json
 {
@@ -96,13 +122,17 @@ BASE_DIR = "/absolute/path/to/your/documents"
 }
 ```
 
+</details>
+
 Starte den Client neu und lass ihn anschließend den Index aufbauen:
 
 ```text
 Synchronisiere alle Dokumente im konfigurierten Stammverzeichnis und warte, bis der Vorgang abgeschlossen ist.
 ```
 
-Bei der ersten Synchronisierung wird das Standard-Embedding-Modell heruntergeladen (etwa 90 MB). Bis der Import beginnt, können 1–2 Minuten vergehen. Spätere Durchläufe verwenden den lokalen Cache.
+Bei der ersten Synchronisierung wird das Standard-Embedding-Modell heruntergeladen (etwa 90
+MB). Bis der Import beginnt, können 1–2 Minuten vergehen. Spätere Durchläufe verwenden den
+lokalen Cache.
 
 Nach Abschluss der Synchronisierung kannst du zum Beispiel fragen:
 
@@ -119,27 +149,45 @@ npx mcp-local-rag ingest ./docs/
 npx mcp-local-rag query "Authentifizierungs-API"
 ```
 
-Die CLI verwendet standardmäßig das aktuelle Verzeichnis als Dokumentenstamm. Führe beide Befehle im selben Verzeichnis aus, damit sie denselben Standardindex verwenden, oder setze `BASE_DIR` und `DB_PATH` ausdrücklich.
-
-## Hintergrund
-
-Manche Dokumentensammlungen dürfen aus Vertraulichkeitsgründen oder aufgrund interner Richtlinien nicht an gehostete Embedding-Dienste gesendet werden. Mit einem lokalen Index bleiben sie durchsuchbar, ohne dass pro Anfrage API-Kosten entstehen.
-
-Eine rein semantische Suche kann exakte Bezeichner übersehen, die in technischer Dokumentation wichtig sind. Die Stichwortgewichtung hält diese Treffer sichtbar, ohne auf natürlichsprachliche Suche zu verzichten.
+Die CLI verwendet standardmäßig das aktuelle Verzeichnis als Stammverzeichnis. Führe beide
+Befehle im selben Verzeichnis aus, damit sie denselben Standardindex verwenden, oder setze
+`BASE_DIR` und `DB_PATH` ausdrücklich.
 
 ## Unterstützte Inhalte
 
 | Eingabe | Import |
 |---|---|
 | PDF, DOCX, TXT, Markdown | Einzelne Datei importieren oder Verzeichnis synchronisieren |
-| Bereits vom Client abgerufenes HTML | Mit `ingest_data`; wird durch Readability bereinigt und in Markdown umgewandelt |
+| Bereits vom Client abgerufenes HTML | `ingest_data` |
 | Im Speicher vorliegender Klartext oder Markdown | Mit `ingest_data` und einer stabilen Quellkennung |
 
-Der Server ruft HTML nicht selbst ab. Ein MCP-Client kann eine Seite laden und ihr HTML an `ingest_data` übergeben.
+Der Server ruft HTML nicht selbst ab. Ein MCP-Client kann eine Seite laden und ihr HTML an
+`ingest_data` übergeben.
 
-Excel, PowerPoint, einzelne Bilddateien und Quellcodedateien werden beim Dateiimport nicht unterstützt. Für Abbildungen in PDFs kann optional ein lokales Vision-Modell verwendet werden. Das ist weder OCR noch Bildsuche.
+Excel, PowerPoint, einzelne Bilddateien und Quellcodedateien werden beim Dateiimport nicht
+unterstützt. Für Abbildungen in PDFs kann optional ein lokales Vision-Modell verwendet werden.
+Das ist weder OCR noch Bildsuche.
 
-## MCP-Werkzeuge
+## Mit dem Index arbeiten
+
+Synchronisiere den Index, nachdem du Dokumente hinzugefügt, geändert oder entfernt hast. Für
+die Suche und das Nachlesen kannst du deinen MCP-Client zum Beispiel bitten:
+
+```text
+Suche in der Dokumentation nach dem Verhalten bei ERR_CONNECTION_REFUSED.
+Lies auch die Abschnitte vor und nach diesem Treffer.
+```
+
+Du kannst auch einzelne Dateien oder bereits vom Client abgerufenes HTML importieren. Um einen
+vorhandenen Eintrag neu aufzubauen, importiere das Dokument erneut mit demselben Pfad oder
+derselben Quellkennung. `sync` überspringt unveränderte Dateien. MCP-Dateipfade müssen absolut
+sein und innerhalb eines konfigurierten Stammverzeichnisses liegen.
+
+Bei PDFs können die erkannten Abschnittsüberschriften fehlerhaft sein. Wenn du die genaue
+Überschrift brauchst, prüfe sie auf der Originalseite.
+
+<details>
+<summary>MCP-Werkzeuge</summary>
 
 | Werkzeug | Zweck |
 |---|---|
@@ -153,108 +201,15 @@ Excel, PowerPoint, einzelne Bilddateien und Quellcodedateien werden beim Dateiim
 | `delete_file` | Eine indexierte Datei oder einen `ingest_data`-Eintrag löschen |
 | `status` | Status von Index und Suche anzeigen |
 
-### Dokumentenstamm synchronisieren
-
-`sync_start` importiert neue und geänderte Dateien, überspringt bytegleiche Dateien und entfernt Indexeinträge für Dateien, die nicht mehr vorhanden sind:
-
-```text
-Synchronisiere alle Inhalte in den konfigurierten Dokumentenstämmen und warte auf den Abschluss.
-```
-
-Das Werkzeug gibt sofort eine `jobId` zurück. Clients sollten `sync_status` abfragen, bis der Status `succeeded` oder `failed` lautet. Ein geändertes PDF behält das visuelle Profil, mit dem es indexiert wurde; ein PDF ohne gespeichertes Profil bleibt reiner Text. `sync_start` kann das Profil nicht ändern.
-
-Der Serverprozess speichert nur einen Synchronisierungsauftrag. Ein neuer Auftrag ersetzt den Eintrag eines abgeschlossenen Auftrags. Beim Neustart des Servers geht der Eintrag verloren.
-
-### Einzelne Datei importieren
-
-`ingest_file` unterstützt PDF, DOCX, TXT und Markdown. MCP-Dateipfade müssen absolut sein und innerhalb eines konfigurierten Dokumentenstamms liegen:
-
-```text
-Importiere das Dokument /Users/me/docs/api-spec.pdf.
-```
-
-Ein erneuter Import desselben Pfads ersetzt die vorhandenen Abschnitte.
-
-### Suchen und weiteren Kontext lesen
-
-```text
-Was steht in der API-Dokumentation zur Authentifizierung?
-Finde das dokumentierte Verhalten von ERR_CONNECTION_REFUSED.
-```
-
-Ergebnisse enthalten Text, Quellpfad, Titel, Abschnittsnummer und Relevanzwert. Wenn mehr Kontext nötig ist, übergib `chunkIndex` und entweder `filePath` oder `source` aus dem Treffer an `read_chunk_neighbors`:
-
-```text
-Lies die benachbarten Abschnitte dieses Treffers zur Authentifizierung.
-```
-
-`query_documents` und `list_files` akzeptieren optional ein absolutes `scope`-Pfadpräfix oder eine Liste von Präfixen. Ein Präfix entspricht dem angegebenen Pfad und allen darunterliegenden Pfaden.
-
-### HTML importieren
-
-Rufe die Seite zuerst mit dem MCP-Client ab und verwende anschließend `ingest_data`:
-
-```text
-Rufe https://example.com/docs ab und importiere das HTML.
-```
-
-Der Server extrahiert den Hauptinhalt, wandelt ihn in Markdown um und speichert ihn unter der angegebenen Quellkennung. Wird dieselbe Quelle erneut verwendet, wird der vorhandene Inhalt aktualisiert.
-
-Beachte beim Indexieren externer Inhalte die Nutzungsbedingungen und das Urheberrecht der Quelle.
-
-### Abbildungen in PDFs
-
-Der visuelle Modus erzeugt Bildbeschreibungen für PDF-Seiten mit vielen Abbildungen. Er muss ausdrücklich aktiviert werden und lädt bei einem normalen Import kein Vision-Modell.
-
-```text
-Importiere /Users/me/docs/research-paper.pdf mit visual: true.
-```
-
-```bash
-npx mcp-local-rag ingest ./docs/research-paper.pdf --visual
-```
-
-| Profil | Modellcache | Geeignet für |
-|---|---:|---|
-| `fast` (Standard) | etwa 250 MB | Leichtgewichtige visuelle Indexierung |
-| `quality` | etwa 1,7 GB | Abbildungen mit Beschriftungen, Anmerkungen oder anderem Text im Bild |
-
-Wähle das größere Modell über MCP mit `visualQuality: "quality"` oder über die CLI mit `--visual-quality quality`. In CPU-Messungen dauerte die Inferenz etwa dreimal so lange wie mit `fast`; die tatsächliche Geschwindigkeit hängt von Hardware und Modellversion ab.
-
-#### Bestehende `quality`-Bildbeschreibungen aktualisieren
-
-Ab 0.18.4 nutzt `quality` Qwen3.5-2B, frühere Versionen nutzten Qwen2.5-VL-3B. Bereits indexierte Bildbeschreibungen behalten den Wortlaut des alten Modells, und `sync` erzeugt sie nicht neu. Importiere die betroffenen Dateien erneut, um ihre Bildbeschreibungen zu aktualisieren:
-
-```bash
-npx mcp-local-rag ingest ./docs/research-paper.pdf --visual --visual-quality quality
-```
-
-Gib `--images` mit, wenn die Datei damit importiert wurde, denn ein Lauf ohne diese Option ersetzt die gespeicherten Bilder. Das alte Modell bleibt auf der Festplatte. Sobald es nicht mehr gebraucht wird, lösche `onnx-community/Qwen2.5-VL-3B-Instruct-ONNX/` aus dem Modellcache-Verzeichnis — `<cache-dir>`, standardmäßig `./models/`.
-
-#### Visueller Modus über Synchronisierungen hinweg
-
-Das Profil, mit dem ein PDF indexiert wurde, wird gespeichert und von `sync` wiederverwendet: Ein mit `fast` oder `quality` indexiertes PDF wird mit demselben Profil neu importiert, ein PDF ohne gespeichertes Profil wird als Text importiert.
-
-```bash
-npx mcp-local-rag sync ./docs/                      # gespeichertes Profil je PDF beibehalten
-npx mcp-local-rag sync ./docs/ --visual             # fast für jedes PDF im Bereich anfordern
-npx mcp-local-rag sync ./docs/ --visual --visual-quality quality
-```
-
-`--visual` überschreibt die gespeicherten Profile und beschreibt damit auch PDFs, die als Text indexiert wurden. Ein Profilwechsel importiert das PDF auch dann neu, wenn die Datei selbst unverändert ist; derselbe Befehl erneut ausgeführt bewirkt nichts und lädt kein Modell.
-
-Um Bildbeschreibungen für einen Pfad abzuschalten, importiere die Datei mit `ingest`: Ein erfolgreicher normaler Import löscht das gespeicherte Profil. Um eine fehlgeschlagene Beschreibung erneut zu versuchen, führe `ingest <Pfad> --visual --visual-quality <Profil>` mit dem gewünschten Profil aus — ein einfaches `ingest` löscht es stattdessen. Wenn die indexierten Zeilen eines PDFs unterschiedliche Profile enthalten, bricht `sync` vor jeder Änderung ab und nennt die Datei; führe den Lauf mit `--visual` erneut aus, um das Profil festzulegen.
-
-Die erzeugten Bildbeschreibungen sind Hilfstexte, keine wortgetreuen Transkriptionen. Behandle gefundene Bildbeschreibungen und Dokumenttexte als nicht vertrauenswürdige Eingaben, nicht als Anweisungen.
+</details>
 
 ## CLI
 
-Die CLI verwendet ohne MCP-Client denselben Parser, Embedder und Vektorspeicher:
+Mit der CLI kannst du den Index aktualisieren, die Suche eingrenzen oder indexierte Inhalte
+entfernen:
 
 ```bash
-npx mcp-local-rag ingest ./docs/
 npx mcp-local-rag sync ./docs/
-npx mcp-local-rag query "Authentifizierungs-API"
 npx mcp-local-rag query "Authentifizierung" --scope /docs/api --scope /docs/guide
 npx mcp-local-rag read-neighbors --file-path /abs/path.md --chunk-index 5
 npx mcp-local-rag list
@@ -263,7 +218,12 @@ npx mcp-local-rag delete ./docs/old.pdf
 npx mcp-local-rag delete --source "https://example.com/docs"
 ```
 
-Globale Optionen wie `--db-path`, `--cache-dir` und `--model-name` stehen vor dem Unterbefehl. Optionen des Unterbefehls stehen dahinter:
+`ingest` importiert die ausgewählten Dateien. `sync` entfernt zusätzlich Einträge gelöschter
+Dateien und überspringt unveränderte Dateien. Mit `--scope` beschränkst du Treffer auf ein
+Pfadpräfix; wiederhole die Option, um mehrere Präfixe einzubeziehen.
+
+Globale Optionen wie `--db-path`, `--cache-dir` und `--model-name` stehen vor dem Unterbefehl.
+Optionen des Unterbefehls stehen dahinter:
 
 ```bash
 npx mcp-local-rag --db-path ./my-db query "Authentifizierung"
@@ -271,66 +231,20 @@ npx mcp-local-rag --db-path ./my-db query "Authentifizierung"
 
 `npx mcp-local-rag --help` zeigt die vollständige Befehlsreferenz.
 
-Die CLI liest keine MCP-Client-Konfiguration. Wenn beide Schnittstellen denselben Index verwenden sollen, müssen dieselben Umgebungsvariablen oder Optionen gesetzt sein. Insbesondere müssen `MODEL_NAME` und die CLI-Option `--model-name` für eine gemeinsam verwendete Datenbank übereinstimmen.
+`query` schreibt seine Ergebnisse als JSON nach stdout, den besten Treffer zuerst, sodass sie
+sich per Pipe an ein anderes Werkzeug übergeben lassen. Die Definition der einzelnen Felder
+steht in [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
 
-`query` schreibt seine Ergebnisse als JSON nach stdout, den besten Treffer zuerst, sodass sie sich per Pipe an ein anderes Werkzeug übergeben lassen. Die Definition der einzelnen Felder steht in [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json).
+Wenn du ein Projekt verschieben und seinen Index behalten möchtest, beende zuerst den
+MCP-Server und andere Schreibprozesse. Verschiebe die Dateien und die Datenbank zusammen, ohne
+die Verzeichnisstruktur zu ändern, und führe dann diesen Befehl aus:
 
-## Suchparameter anpassen
-
-Die Stichwortgewichtung ist standardmäßig aktiv. Für Korpora, die eine strengere Auswahl erfordern, stehen außerdem die Gruppierung anhand von Relevanzsprüngen sowie Distanz- und Dateifilter zur Verfügung. Alle vier gelten für den MCP-Server und für `query` in der CLI gleichermaßen.
-
-| Variable | Standard | Beschreibung |
-|----------|---------|-------------|
-| `RAG_HYBRID_WEIGHT` | `0.6` | Gewicht der Stichworttreffer (0.0–1.0). 0 deaktiviert die Stichwortgewichtung, 1 verwendet das höchste Gewicht. |
-| `RAG_GROUPING` | nicht gesetzt | `similar` behält die erste Relevanzgruppe; `related` behält bis zu zwei Gruppen und trennt sie an deutlichen Sprüngen der Vektordistanz. |
-| `RAG_MAX_DISTANCE` | nicht gesetzt | Filtert wenig relevante Treffer heraus, zum Beispiel mit `0.5`. |
-| `RAG_MAX_FILES` | nicht gesetzt | Beschränkt die Treffer auf die besten N Dateien, zum Beispiel mit `1` auf die beste Datei. |
-| `RAG_RERANK_CMD` | nicht gesetzt | Nur MCP-Server: externer Befehl, der die Treffer neu ordnet. Deine Suchanfrage und der gefundene Text gehen an ihn. |
-| `RAG_RERANK_TIMEOUT_MS` | `10000` | Zeitbudget pro Neuordnung in Millisekunden (100–600000). |
-
-Bei API-Spezifikationen und anderen Dokumenten mit vielen Bezeichnern kann ein höheres Stichwortgewicht die Rangfolge exakter Treffer verbessern:
-
-```json
-"env": {
-  "RAG_HYBRID_WEIGHT": "0.7"
-}
+```bash
+npx mcp-local-rag --db-path /new/project/lancedb relocate --from /old/project --to /new/project
 ```
 
-- `0.7`: etwas stärkere Gewichtung exakter Begriffe als in der Standardeinstellung
-- `1.0`: höchste Stichwortgewichtung
-
-### Externes Neuordnen (`RAG_RERANK_CMD`)
-
-Nenne hier einen Befehl, und der Server übergibt ihm jede Trefferliste zum Neuordnen, zusammen mit deiner Suchanfrage und dem Text der gefundenen Abschnitte. Ein Befehl, der einen entfernten Dienst aufruft, sendet all das von diesem Rechner fort.
-
-Gib den Befehl und seine Argumente durch Leerzeichen getrennt an. Es muss eine ausführbare Datei sein: Der Server startet sie ohne Shell, deshalb lässt sich ein von npm installierter `.cmd`-Wrapper unter Windows nicht starten.
-
-```json
-"env": {
-  "RAG_RERANK_CMD": "/path/to/reranker",
-  "RAG_RERANK_TIMEOUT_MS": "10000"
-}
-```
-
-Der Befehl erhält jeden Treffer in der unter [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) veröffentlichten Form und muss in derselben Form antworten. Darin entscheidet er alles: was er behält, wie er es ordnet und was im Text steht. Was er zurückgibt, bekommst du zu sehen.
-
-Schlägt der Befehl fehl, läuft er in die Zeitgrenze oder antwortet er mit etwas, das diese Form nicht hat, bleibt die ursprüngliche Reihenfolge erhalten.
-
-## Funktionsweise
-
-Beim Import:
-
-1. Der Parser extrahiert den Text aus dem Eingabeformat.
-2. Der semantische Chunker erkennt Themenwechsel und behält Markdown-Codeblöcke intakt.
-3. Transformers.js erzeugt die Embeddings lokal.
-4. LanceDB speichert Abschnitte, Metadaten, Vektoren und den Volltextindex.
-
-Bei der Suche:
-
-1. Die Abfrage wird mit demselben Modell eingebettet.
-2. Die Vektorsuche findet semantisch verwandte Abschnitte.
-3. Optionale Distanzfilter und Relevanzgruppen schränken die Kandidaten weiter ein.
-4. Volltexttreffer erhöhen das Gewicht exakter Suchbegriffe.
+Passe `BASE_DIR`/`BASE_DIRS`, `DB_PATH` und weitere betroffene Pfade in deiner MCP-Konfiguration
+an und starte den Client neu.
 
 ## Agent Skills
 
@@ -342,68 +256,177 @@ npx mcp-local-rag skills install --claude-code --global
 npx mcp-local-rag skills install --codex
 ```
 
-Die installierten Skills behandeln Abfrageformulierung, Trefferverfeinerung und HTML-Import. Falls ein Skill nicht automatisch aktiviert wird, bitte den Assistenten ausdrücklich darum, den mcp-local-rag-Skill zu verwenden.
+Die installierten Skills behandeln Abfrageformulierung, Trefferverfeinerung und HTML-Import.
+Falls ein Skill nicht automatisch aktiviert wird, bitte den Assistenten ausdrücklich darum, den
+mcp-local-rag-Skill zu verwenden.
 
-## Konfiguration
+## Erweiterte Optionen
 
-Der MCP-Server liest Umgebungsvariablen. Die CLI unterstützt dieselben Variablen sowie die aufgeführten Optionen; CLI-Optionen haben Vorrang.
+Beginne mit den Standardeinstellungen. Die folgenden Abschnitte helfen dir, wenn du mehrere
+Stammverzeichnisse brauchst, die Suche an deinen Bestand anpassen oder PDF-Abbildungen
+durchsuchbar machen möchtest.
+
+<details>
+<summary>Speicher und Stammverzeichnisse</summary>
+
+Der MCP-Server liest Umgebungsvariablen. Die CLI unterstützt die aufgeführten Variablen und
+Optionen. Verwende denselben `DB_PATH`, wenn mehrere Befehle denselben Index nutzen sollen.
 
 | Umgebungsvariable | CLI-Option | Standard | Beschreibung |
 |---------------------|----------|---------|-------------|
-| `BASE_DIR` | `--base-dir` | Aktuelles Verzeichnis | Ein Dokumentenstamm; die CLI-Option kann bei `ingest`, `list` und `sync` mehrfach verwendet werden |
-| `BASE_DIRS` | – | nicht gesetzt | JSON-Array mit Dokumentenstämmen; hat Vorrang vor `BASE_DIR` |
+| `BASE_DIR` | `--base-dir` | Aktuelles Verzeichnis | Ein Stammverzeichnis; die CLI-Option kann bei `ingest`, `list` und `sync` mehrfach verwendet werden |
+| `BASE_DIRS` | – | nicht gesetzt | JSON-Array mit Stammverzeichnissen; hat Vorrang vor `BASE_DIR` |
+| `IGNORE_PATHS` | – | nicht gesetzt | JSON-Array mit Glob-Mustern für Dateien, die nicht in den Index sollen |
 | `DB_PATH` | `--db-path` | `./lancedb/` | Pfad zur Vektordatenbank |
 | `CACHE_DIR` | `--cache-dir` | `./models/` | Verzeichnis für den Modellcache |
 | `HF_ENDPOINT` | – | `https://huggingface.co` | Endpunkt für Hugging-Face-Modelldownloads; bei blockierten Direktdownloads die URL eines Mirrors verwenden |
-| `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Hugging-Face-Embedding-Modell |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600` (100 MB) | Maximale Dateigröße in Byte |
+
+Dateizugriffe bleiben auf die konfigurierten Stammverzeichnisse beschränkt. Für mehrere
+Verzeichnisse setze `BASE_DIRS='["/absolute/docs","/absolute/specs"]'` oder wiederhole die
+CLI-Option `--base-dir`. Es gilt: CLI-Stammverzeichnisse vor `BASE_DIRS`, vor `BASE_DIR`, vor
+dem aktuellen Verzeichnis. Es zählt nur die Angabe mit der höchsten Priorität; die
+Stammverzeichnisse aus verschiedenen Quellen werden nicht zusammengeführt. Ungültiges
+`BASE_DIRS` führt zu einem Fehler. Relative Werte für `DB_PATH` und `CACHE_DIR` beziehen sich
+auf das Arbeitsverzeichnis.
+
+Um Dateien aus dem Index herauszuhalten, setze `IGNORE_PATHS` auf ein JSON-Array mit
+Glob-Mustern, zum Beispiel `IGNORE_PATHS='["plugs/**","**/*.draft.md"]'`. Jedes Muster wird mit
+dem Pfad der Datei relativ zu ihrem Stammverzeichnis verglichen, auf jedem Betriebssystem mit
+`/` geschrieben. `*` und `**` erfassen keine Namen, die mit `.` beginnen. Schreibe solche
+Verzeichnisse aus, etwa `".obsidian/**"`. Wenn `ingest`, `list` und `sync` ein Verzeichnis
+verarbeiten, überspringen sie passende Dateien, und `sync` entfernt bereits indexierte Dateien
+wieder aus dem Index. Ungültiges `IGNORE_PATHS` führt zu einem Fehler.
+
+</details>
+
+<details>
+<summary>Modelle und Suchparameter</summary>
+
+Wähle ein Embedding-Modell passend zur Sprache und zum Fachgebiet deiner Dokumente. Vergleiche
+Einstellungen mit deinen tatsächlichen Fragen und prüfe, welche Textstellen gefunden werden.
+Das Modell muss Mean Pooling und L2-Normalisierung unterstützen, da das Werkzeug damit die
+Embeddings berechnet.
+
+| Umgebungsvariable | CLI-Option | Standard | Beschreibung |
+|---------------------|----------|---------|-------------|
+| `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Hugging-Face-Embedding-Modell |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | Mindestlänge eines gewöhnlichen Abschnitts in Zeichen (1–10000); ein Teilstück, das beim Teilen für das Token-Limit des Modells entsteht, darf kürzer sein |
+| `EMBED_TITLE_PREFIX` | – | `false` | Ergänzt die Embedding-Eingabe jedes Abschnitts um den Dokumenttitel |
+| `EMBED_HEADING_PREFIX` | – | `false` | Ergänzt die Embedding-Eingabe jedes Abschnitts um die Überschriftenhierarchie, sofern sie hineinpasst |
 | `RAG_DEVICE` | – | `cpu` | ONNX-Runtime-Ausführungsgerät |
 | `RAG_DTYPE` | – | `fp32` | An das ausgewählte Modell übergebener Embedding-Datentyp |
 
-### Dokumentenstämme (`BASE_DIR` und `BASE_DIRS`)
+Beide Präfixoptionen sind standardmäßig `false` und unabhängig voneinander nutzbar. Probiere
+`EMBED_TITLE_PREFIX`, wenn einem Abschnitt das übergeordnete Dokumentthema fehlt, oder
+`EMBED_HEADING_PREFIX`, wenn er das Thema seines Kapitels braucht. Beide zusammen liefern nicht
+immer bessere Treffer. Sie beeinflussen die Embeddings, nicht den zurückgegebenen Text oder den
+Stichwortindex; Überschriftenkontext entfällt, wenn er das Eingabelimit überschreiten würde.
 
-mcp-local-rag erlaubt Dateizugriffe nur innerhalb der konfigurierten Stammverzeichnisse. Für mehrere Stammverzeichnisse muss `BASE_DIRS` ein JSON-Array mit nicht leeren Pfaden sein:
+Erstelle bei einem Wechsel des Embedding-Modells einen neuen Index unter einem neuen `DB_PATH`.
+Vektoren verschiedener Modelle sind auch bei gleicher Dimension nicht vergleichbar. Nach einer
+Änderung von `RAG_DTYPE` oder einer Präfixoption musst du alle indexierten Dokumente erneut
+importieren, bevor du suchst. `sync` überspringt unveränderte Dateien.
 
-```bash
-export BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]'
+Die CLI liest keine MCP-Client-Konfiguration. Verwende bei einem gemeinsamen Index dasselbe
+Modell, denselben `RAG_DTYPE` und dieselben Präfixeinstellungen für Import und Suche. Ein
+Wechsel von `RAG_DEVICE` allein erfordert keinen neuen Index.
+
+### Suchparameter
+
+Die ersten vier Einstellungen in der Tabelle gelten für MCP und CLI. Wenn exakte Begriffe
+stärker zählen sollen, erhöhe versuchsweise `RAG_HYBRID_WEIGHT` und vergleiche die Treffer
+anhand deiner eigenen Fragen. Das externe Neuordnen ist nur über MCP verfügbar.
+
+| Variable | Standard | Beschreibung |
+|----------|---------|-------------|
+| `RAG_HYBRID_WEIGHT` | `0.6` | Gewicht der Stichworttreffer (0.0–1.0). 0 deaktiviert die Stichwortgewichtung, 1 verwendet das höchste Gewicht. |
+| `RAG_GROUPING` | nicht gesetzt | `similar` behält die erste Relevanzgruppe; `related` behält bis zu zwei Gruppen und trennt sie an deutlichen Sprüngen der Vektordistanz. |
+| `RAG_MAX_DISTANCE` | nicht gesetzt | Filtert wenig relevante Treffer heraus, zum Beispiel mit `0.5`. |
+| `RAG_MAX_FILES` | nicht gesetzt | Beschränkt die Treffer auf die besten N Dateien, zum Beispiel mit `1` auf die beste Datei. |
+| `RAG_RERANK_CMD` | nicht gesetzt | Nur MCP: externer Befehl; `{query}` übergibt die Suchanfrage, `{top}` die angeforderte Trefferzahl. |
+| `RAG_RERANK_TIMEOUT_MS` | `10000` | Zeitbudget pro Neuordnung in Millisekunden (100–600000). |
+
+### Externes Neuordnen (`RAG_RERANK_CMD`)
+
+Der Befehl erhält die Suchtreffer samt Text über die Standardeingabe. Ruft er einen entfernten
+Dienst auf, kann dieser Text den Rechner verlassen.
+
+Gib die ausführbare Datei und die vollständige Argumentvorlage an. Setze `{query}` und `{top}`
+dort ein, wo der Befehl die Suchanfrage und die Anzahl der Ergebnisse erwartet. Einfache oder
+doppelte Anführungszeichen fassen Pfade oder Argumente mit Leerzeichen zusammen, und
+Backslashes bleiben wörtlich. Der Server startet die ausführbare Datei ohne Shell, deshalb
+lässt sich ein von npm installierter `.cmd`-Wrapper unter Windows nicht starten.
+
+```json
+{
+  "env": {
+    "RAG_RERANK_CMD": "/path/to/reranker --query {query} --top {top}",
+    "RAG_RERANK_TIMEOUT_MS": "10000"
+  }
+}
 ```
 
-Die Stammverzeichnisse werden in dieser Reihenfolge ermittelt:
+Der Befehl muss Ergebnisse im Format des [Ausgabeschemas](docs/schema/query-output.schema.json)
+lesen und zurückgeben. Er kann Treffer entfernen, umsortieren oder deren Text ändern. Der
+Server gibt seine Ausgabe zurück.
 
-1. CLI-Optionen `--base-dir <path>` (mehrfach bei `ingest`, `list` und `sync` möglich)
-2. `BASE_DIRS`
-3. `BASE_DIR`
-4. Aktuelles Verzeichnis
+Die ursprüngliche Reihenfolge bleibt erhalten, wenn der Befehl fehlschlägt, das Zeitlimit
+überschreitet oder eine Antwort zurückgibt, die nicht dem Schema entspricht.
 
-Jede Quelle ersetzt die nachrangige Quelle vollständig, statt mit ihr zusammengeführt zu werden. Eine ungültige `BASE_DIRS`-Konfiguration führt zu einem Fehler; es wird nicht auf `BASE_DIR` oder das aktuelle Verzeichnis zurückgegriffen. `status` bleibt in MCP verfügbar, damit der Client den Konfigurationsfehler melden kann.
+</details>
+
+<details>
+<summary>PDF-Abbildungen und gespeicherte Bilder</summary>
+
+Standardmäßig indexiert der Import nur Text. Für PDF-Abbildungen kannst du lokale
+Bildbeschreibungen mit `visual: true` in MCP oder `--visual` in der CLI aktivieren. Die
+Beschreibungen sind weder OCR noch wortgetreue Transkriptionen.
+
+`fast` (Standard) lädt bei der ersten Verwendung etwa 250 MB herunter. Für Beschriftungen und
+Text innerhalb von Abbildungen eignet sich `quality`; dafür werden etwa 1,7 GB heruntergeladen,
+und die Verarbeitung dauert länger.
+
+Wähle das Profil mit `visualQuality: "quality"` in MCP oder `--visual-quality quality` in der
+CLI.
 
 ```bash
-npx mcp-local-rag ingest --base-dir /Users/me/work --base-dir /Users/me/specs /Users/me/work/readme.md
-npx mcp-local-rag list --base-dir /Users/me/work --base-dir /Users/me/specs
-npx mcp-local-rag sync --base-dir /Users/me/work --base-dir /Users/me/specs
-BASE_DIRS='["/Users/me/work","/Users/me/specs"]' npx mcp-local-rag list
+npx mcp-local-rag ingest ./docs/paper.pdf --visual --visual-quality quality
 ```
 
-### Speicher und Modelle
+Um Bilder zusammen mit passenden Texttreffern zurückzugeben, setze `STORE_IMAGES=true` in MCP
+oder verwende `--images` bei CLI-`ingest` und `sync`. Das funktioniert unabhängig von
+Bildbeschreibungen und unterstützt erkannte PDF-Abbildungen und Tabellen sowie unterstützte
+PNG/JPEG-Bilder aus DOCX.
 
-`DB_PATH` und `CACHE_DIR` beziehen sich standardmäßig auf das Arbeitsverzeichnis des Prozesses. Verwende absolute Pfade, wenn der MCP-Client den Server aus unterschiedlichen Projektverzeichnissen starten kann.
+```bash
+npx mcp-local-rag ingest ./docs/paper.pdf --images
+```
 
-Setze `MODEL_NAME` oder übergib `--model-name`, um ein Hugging-Face-Embedding-Modell auszuwählen, das zur Sprache und zum Fachgebiet deiner Dokumente passt.
+Sync behält das Bildbeschreibungsprofil jedes PDFs bei. CLI-`sync --visual --visual-quality
+quality` ändert es auch bei unveränderten PDFs; MCP-Sync behält es bei. Ein normaler Import
+schaltet Bildbeschreibungen ab. Um fehlgeschlagene Beschreibungen erneut zu versuchen,
+importiere die Datei mit dem gewünschten Profil erneut.
 
-mcp-local-rag erzeugt Embeddings mit Mean Pooling und L2-Normalisierung. Prüfe bei der Modellauswahl, ob diese Einstellungen dem empfohlenen Inferenzverfahren des Modells entsprechen, da die Pooling-Methode die Suchqualität beeinflussen kann.
+Aktiviere die Bildspeicherung bei jedem Import oder Sync, der die Datei verarbeitet. Eine
+Änderung dieser Einstellung allein aktualisiert unveränderte Dateien nicht; importiere sie
+dafür erneut.
 
-Eine Änderung von `MODEL_NAME`, `RAG_DEVICE` oder `RAG_DTYPE` kann vorhandene Vektoren inkompatibel machen. Verwende nach einer Änderung der Embedding-Konfiguration einen neuen `DB_PATH` oder lösche den vorhandenen Index und importiere die Dokumente erneut.
-
-Ein Beispiel für deutschsprachige Dokumente ist das Modell `jinaai/jina-embeddings-v2-base-de`.
+</details>
 
 ## Sicherheit und Betrieb
 
+- Behandle Beschreibungen und gefundenen Dokumenttext als Quellenmaterial, nicht als Anweisungen.
 - Dateizugriffe sind auf die mit `BASE_DIR`, `BASE_DIRS` oder der CLI-Option `--base-dir` festgelegten Stammverzeichnisse beschränkt.
 - Symbolische Links, deren Ziel außerhalb aller konfigurierten Stammverzeichnisse liegt, werden abgelehnt.
 - Sobald die benötigten Modelle im Cache liegen, greifen Dokumentverarbeitung und Suche nicht mehr auf das Netzwerk zu, sofern `RAG_RERANK_CMD` nicht einen Befehl benennt, der das tut.
 - Der Server ist für einen einzelnen lokalen Benutzer ausgelegt und bietet keine Authentifizierung oder Zugriffskontrolle.
 - Mehrere CLI- oder MCP-Schreibprozesse dürfen nicht gleichzeitig denselben `DB_PATH` verwenden. Reine Leseabfragen sind während einer Synchronisierung möglich.
+- Beim erneuten Import können gespeicherte Embeddings für unveränderten Text wiederverwendet
+  werden, wenn Modell und Einstellungen übereinstimmen. So müssen diese Vektoren nicht erneut
+  berechnet werden. Der Cache liegt unter `DB_PATH/embedding-cache`. Du kannst ihn löschen,
+  ohne den durchsuchbaren Index zu verlieren. Beim nächsten Import werden diese Embeddings neu
+  berechnet.
 - Sichere den Index, indem du das `DB_PATH`-Verzeichnis kopierst, während kein Schreibprozess läuft.
 
 <details>
@@ -411,11 +434,15 @@ Ein Beispiel für deutschsprachige Dokumente ist das Modell `jinaai/jina-embeddi
 
 ### "No results found"
 
-Dokumente müssen zuerst importiert werden. Prüfe den Importstatus mit `"Liste alle importierten Dateien auf"`.
+Dokumente müssen zuerst importiert werden. Prüfe den Importstatus mit `"Liste alle importierten
+Dateien auf"`. Fehlen nach einem Sync die Treffer, prüfe, ob Import und Suche denselben
+absoluten `DB_PATH` verwenden. Ein relativer Pfad kann auf einen anderen Index zeigen.
 
 ### Modelldownload fehlgeschlagen
 
-Prüfe die Internetverbindung. Wenn du einen Proxy verwendest, kontrolliere die Netzwerkeinstellungen. Das Modell kann auch [manuell heruntergeladen](https://huggingface.co/Xenova/all-MiniLM-L6-v2) werden.
+Prüfe die Internetverbindung. Wenn du einen Proxy verwendest, kontrolliere die
+Netzwerkeinstellungen. Das Modell kann auch [manuell
+heruntergeladen](https://huggingface.co/Xenova/all-MiniLM-L6-v2) werden.
 
 ### "File too large"
 
@@ -423,11 +450,14 @@ Die Standardgrenze beträgt 100 MB. Teile die Datei auf oder erhöhe `MAX_FILE_S
 
 ### Langsame Abfragen
 
-Prüfe die Anzahl der Abschnitte mit `status`. Große Dokumente mit vielen Abschnitten können Abfragen verlangsamen. Sehr große Dateien sollten gegebenenfalls geteilt werden.
+Prüfe die Anzahl der Abschnitte mit `status`. Große Dokumente mit vielen Abschnitten können
+Abfragen verlangsamen. Sehr große Dateien sollten gegebenenfalls geteilt werden.
 
 ### "Path outside BASE_DIR"
 
-Der Dateipfad muss innerhalb eines konfigurierten Stammverzeichnisses liegen: `BASE_DIR`, ein Eintrag aus `BASE_DIRS` oder ein über `--base-dir` gesetzter Pfad. Verwende einen absoluten Pfad.
+Der Dateipfad muss innerhalb eines konfigurierten Stammverzeichnisses liegen: `BASE_DIR`, ein
+Eintrag aus `BASE_DIRS` oder ein über `--base-dir` gesetzter Pfad. Verwende einen absoluten
+Pfad.
 
 ### "BASE_DIRS must be a JSON array..."
 
@@ -447,7 +477,8 @@ Der Dateipfad muss innerhalb eines konfigurierten Stammverzeichnisses liegen: `B
 
 ## Mitwirken
 
-Beiträge sind willkommen. Hinweise zur Einrichtung und zu den Richtlinien stehen in [CONTRIBUTING.md](CONTRIBUTING.md).
+Beiträge sind willkommen. Hinweise zur Einrichtung und zu den Richtlinien stehen in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Lizenz
 
@@ -459,4 +490,6 @@ MIT-Lizenz. Kostenlose Nutzung für private und kommerzielle Zwecke.
 
 ## Danksagung
 
-Erstellt mit dem [Model Context Protocol](https://modelcontextprotocol.io/) von Anthropic, [LanceDB](https://lancedb.com/) und [Transformers.js](https://huggingface.co/docs/transformers.js).
+Erstellt mit dem [Model Context Protocol](https://modelcontextprotocol.io/) von Anthropic,
+[LanceDB](https://lancedb.com/) und
+[Transformers.js](https://huggingface.co/docs/transformers.js).

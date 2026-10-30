@@ -13,6 +13,7 @@ import {
   FTS_CLEANUP_THRESHOLD_MS,
   FTS_INDEX_NAME,
   HYBRID_SEARCH_CANDIDATE_MULTIPLIER,
+  HYBRID_SEARCH_MIN_CANDIDATES,
   normalizeVisualAttachments,
   parseHydratedVisualAttachments,
   type SearchOptions,
@@ -159,7 +160,7 @@ export class VectorStore {
       const raw = await this.table
         .query()
         .where(predicate)
-        .select(['filePath', 'chunkIndex', 'text', 'fileTitle'])
+        .select(['filePath', 'chunkIndex', 'text', 'fileTitle', 'sourceContext'])
         .toArray()
       const rows = raw.map((row) => toChunkRow(row))
       // Contractual ascending sort; do not rely on storage order.
@@ -216,6 +217,7 @@ export class VectorStore {
         const records = chunks.map((chunk) => ({
           ...chunk,
           fileTitle: chunk.fileTitle ?? '',
+          sourceContext: chunk.sourceContext ?? '',
           contentHash: chunk.contentHash ?? '',
           visualProfile: chunk.visualProfile ?? '',
           visualAttachments: normalizeVisualAttachments(chunk.visualAttachments),
@@ -233,6 +235,7 @@ export class VectorStore {
         const records = chunks.map((chunk) => ({
           ...chunk,
           visualProfile: chunk.visualProfile ?? null,
+          sourceContext: chunk.sourceContext ?? null,
           visualAttachments: normalizeVisualAttachments(chunk.visualAttachments),
         }))
         await this.table.add(records)
@@ -291,9 +294,10 @@ export class VectorStore {
   }
 
   /**
-   * Ensure schema is up to date by adding missing columns.
+   * Ensure schema is up to date by adding missing columns and dropping the ones
+   * nothing reads.
    * Uses table.addColumns() API for top-level column additions.
-   * Idempotent: checks for column existence before adding.
+   * Idempotent: checks for column existence before adding or dropping.
    */
   private async ensureSchemaVersion(): Promise<void> {
     if (!this.table) {
@@ -303,6 +307,10 @@ export class VectorStore {
     const schema = await this.table.schema()
     const hasField = (name: string): boolean =>
       schema.fields.some((f: { name: string }) => f.name === name)
+
+    if (!hasField('sourceContext')) {
+      await this.table.addColumns([{ name: 'sourceContext', valueSql: 'cast(NULL as string)' }])
+    }
 
     if (!hasField('fileTitle')) {
       await this.table.addColumns([{ name: 'fileTitle', valueSql: 'cast(NULL as string)' }])
@@ -322,6 +330,12 @@ export class VectorStore {
     if (!hasField('visualProfile')) {
       await this.table.addColumns([{ name: 'visualProfile', valueSql: 'cast(NULL as string)' }])
       console.error('VectorStore: Migrated schema - added visualProfile column')
+    }
+
+    // Chunk metadata struct written by older versions; nothing reads it.
+    if (hasField('metadata')) {
+      await this.table.dropColumns(['metadata'])
+      console.error('VectorStore: Migrated schema - dropped the unused metadata column')
     }
   }
 
@@ -371,7 +385,7 @@ export class VectorStore {
       const ftsResults = await table
         .search(queryText, 'fts', 'text')
         .where(whereClause)
-        .select(['filePath', 'chunkIndex', 'text', 'metadata', '_score'])
+        .select(['filePath', 'chunkIndex', 'text', '_score'])
         .limit(results.length * 2) // Enough to cover all vector results
         .toArray()
 
@@ -380,6 +394,21 @@ export class VectorStore {
       console.error('VectorStore: FTS search failed, using vector-only results:', ftsError)
       return results
     }
+  }
+
+  private getCandidateLimit(limit: number, queryText: string | undefined): number {
+    const candidateLimit = limit * HYBRID_SEARCH_CANDIDATE_MULTIPLIER
+    const hybridWeight = this.config.hybridWeight ?? DEFAULT_HYBRID_WEIGHT
+    // Grouping depends on gaps across the fetched pool; keep its existing window.
+    if (
+      this.ftsEnabled &&
+      queryText?.trim() &&
+      hybridWeight > 0 &&
+      this.config.grouping === undefined
+    ) {
+      return Math.max(candidateLimit, HYBRID_SEARCH_MIN_CANDIDATES)
+    }
+    return candidateLimit
   }
 
   async search(queryVector: number[], options: SearchOptions = {}): Promise<SearchResult[]> {
@@ -398,11 +427,11 @@ export class VectorStore {
 
     try {
       // Step 1: Semantic (vector) search - always the primary search
-      const candidateLimit = limit * HYBRID_SEARCH_CANDIDATE_MULTIPLIER
+      const candidateLimit = this.getCandidateLimit(limit, queryText)
       let query = this.table
         .vectorSearch(queryVector)
         .distanceType('dot')
-        .select(['id', 'filePath', 'chunkIndex', 'text', 'metadata', 'fileTitle', '_distance'])
+        .select(['id', 'filePath', 'chunkIndex', 'text', 'fileTitle', 'sourceContext', '_distance'])
         .limit(candidateLimit)
 
       // Restrict to chunks under the given prefixes (exact-or-descendant)

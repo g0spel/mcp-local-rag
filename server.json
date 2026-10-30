@@ -8,13 +8,13 @@
     "url": "https://github.com/shinpr/mcp-local-rag",
     "source": "github"
   },
-  "version": "0.19.0",
+  "version": "0.23.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "mcp-local-rag",
-      "version": "0.19.0",
+      "version": "0.23.1",
       "transport": {
         "type": "stdio"
       },
@@ -29,6 +29,13 @@
         {
           "name": "BASE_DIRS",
           "description": "JSON array of base directories (e.g. '[\"/a\",\"/b\"]'). Takes precedence over BASE_DIR.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "IGNORE_PATHS",
+          "description": "JSON array of glob patterns for files to keep out of the index, each matched against the file's path relative to its root (e.g. '[\"plugs/**\",\"**/*.draft.md\"]').",
           "isRequired": false,
           "format": "string",
           "isSecret": false
@@ -104,6 +111,20 @@
           "isSecret": false
         },
         {
+          "name": "EMBED_TITLE_PREFIX",
+          "description": "Embed each chunk together with its document title, which can help when passages don't restate the topic the title names (defaults to false). After changing it, use a new DB_PATH or delete the index and re-ingest.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
+          "name": "EMBED_HEADING_PREFIX",
+          "description": "Add section headings to chunk embeddings when they fit (defaults to false). Independent of EMBED_TITLE_PREFIX. Re-ingest documents after changing it.",
+          "isRequired": false,
+          "format": "string",
+          "isSecret": false
+        },
+        {
           "name": "RAG_DEVICE",
           "description": "Execution device for the embedder (defaults to cpu). Passed straight to ONNX Runtime; see the Transformers.js device source for the supported backend names. If the requested device fails to initialize, the server throws an error.",
           "isRequired": false,
@@ -126,7 +147,7 @@
         },
         {
           "name": "RAG_RERANK_CMD",
-          "description": "External command that reorders query_documents results (unset disables reranking). The search query and the matched document chunks, including their text, are passed to this command, so a command that contacts a remote service sends that content off this machine.",
+          "description": "External reranker command template. Use {query} and {top} for query text and result count; unset disables reranking.",
           "isRequired": false,
           "format": "string",
           "isSecret": false

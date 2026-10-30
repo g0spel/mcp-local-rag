@@ -4,10 +4,7 @@
 
 # MCP Local RAG
 
-[![GitHub stars](https://img.shields.io/github/stars/shinpr/mcp-local-rag?style=social)](https://github.com/shinpr/mcp-local-rag)
-[![npm version](https://img.shields.io/npm/v/mcp-local-rag.svg)](https://www.npmjs.com/package/mcp-local-rag)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![MCP Registry](https://img.shields.io/badge/MCP-Registry-green.svg)](https://registry.modelcontextprotocol.io/)
+[![GitHub stars](https://img.shields.io/github/stars/shinpr/mcp-local-rag?style=social)](https://github.com/shinpr/mcp-local-rag) [![npm version](https://img.shields.io/npm/v/mcp-local-rag.svg)](https://www.npmjs.com/package/mcp-local-rag) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![MCP Registry](https://img.shields.io/badge/MCP-Registry-green.svg)](https://registry.modelcontextprotocol.io/)
 
 <p align="center">
   <a href="README.md">English</a> |
@@ -20,39 +17,39 @@
 
 通过 MCP 客户端或终端搜索私有文档，无需将内容发送给嵌入 API。
 
-mcp-local-rag 在本机为 PDF、DOCX、Markdown 和文本文件建立索引。搜索结合语义相似度与关键词匹配，既能理解查询意图，也能准确匹配 API 名称、类名和错误代码等技术术语。
+mcp-local-rag 在本机为 PDF、DOCX、Markdown 和文本文件建立索引。搜索结合语义相似度与关键词匹配，既能检索语义相关的内容，也支持 API 名称、类名和错误代码等技术术语的精确匹配。搜索结果包含原文片段，并在可获取时附上章节标题、行号或页码，方便核对和引用原文。
 
-## 功能
-
-- **本地运行：** 文档解析、嵌入、存储和搜索全部在本机完成。首次下载模型后，文本导入和搜索均可离线使用。
-- **混合搜索：** 语义检索负责查找相关概念，关键词匹配则提高精确技术术语的排名。
-- **可配置嵌入模型：** 可根据文档的语言和领域选择合适的 Hugging Face 嵌入模型。
-- **语义分块：** 按主题边界而非固定字符数拆分文档，并保持 Markdown 代码块完整。
-- **MCP 和 CLI：** AI 编程工具与终端可使用同一份索引。
-
-无需 API 密钥、Docker、Python 或外部数据库。
+无需 API 密钥、Docker、Python 或外部数据库。首次下载模型后，文本导入与搜索均可离线运行。
 
 ## 快速开始
 
 ### 使用要求
 
-- Node.js 22 或更高版本
+- Node.js 22.20 或更高版本
 - 首次使用时需要联网下载 npm 包和嵌入模型
 - 一个包含待搜索文档的目录
 
 将 `BASE_DIR` 设置为该目录。它同时也是文件操作的安全边界。请将下方的 `/absolute/path/to/your/documents` 替换为该目录的绝对路径。
 
-mcp-local-rag 通过本地 stdio 服务器使用标准 MCP 协议，因此可与支持本地 MCP 服务器的 AI 编程工具及其他 MCP 宿主配合使用。
-
 可直接使用以下示例，也可以按照客户端的 MCP 配置格式注册 `npx -y mcp-local-rag` 并设置 `BASE_DIR`。
 
-**Claude Code：** 运行以下命令：
+请同时将 `DB_PATH` 和 `CACHE_DIR` 设为绝对路径。相对路径以服务器的工作目录为基准，从不同项目目录启动服务器时，会在各目录中分别创建索引和模型缓存。
+
+<details>
+<summary>Claude Code</summary>
+
+运行以下命令：
 
 ```bash
 claude mcp add local-rag --scope user --env BASE_DIR=/absolute/path/to/your/documents -- npx -y mcp-local-rag
 ```
 
-**Codex：** 在 `~/.codex/config.toml` 中添加：
+</details>
+
+<details>
+<summary>Codex</summary>
+
+在 `~/.codex/config.toml` 中添加：
 
 ```toml
 [mcp_servers.local-rag]
@@ -63,7 +60,12 @@ args = ["-y", "mcp-local-rag"]
 BASE_DIR = "/absolute/path/to/your/documents"
 ```
 
-**OpenCode：** 在 `~/.config/opencode/opencode.json`（或 `opencode.jsonc`）中添加：
+</details>
+
+<details>
+<summary>OpenCode</summary>
+
+在 `~/.config/opencode/opencode.json`（或 `opencode.jsonc`）中添加：
 
 ```json
 {
@@ -80,7 +82,12 @@ BASE_DIR = "/absolute/path/to/your/documents"
 }
 ```
 
-**Cursor：** 在 `~/.cursor/mcp.json` 中添加：
+</details>
+
+<details>
+<summary>Cursor</summary>
+
+在 `~/.cursor/mcp.json` 中添加：
 
 ```json
 {
@@ -95,6 +102,8 @@ BASE_DIR = "/absolute/path/to/your/documents"
   }
 }
 ```
+
+</details>
 
 重启客户端，然后让它创建索引：
 
@@ -121,25 +130,33 @@ npx mcp-local-rag query "身份验证 API"
 
 CLI 默认将当前目录作为文档根目录。请在同一目录中运行这两条命令，以便共用默认索引；也可以显式设置 `BASE_DIR` 和 `DB_PATH`。
 
-## 为什么开发它
-
-出于保密要求或组织政策，有些文档不能发送给托管式嵌入服务。将索引保留在本机，既能搜索这些文档，也不会产生按查询计费的 API 成本。
-
-单纯依赖语义搜索，可能会漏掉技术文档中重要的精确标识符。关键词重排可以保留这些精确匹配，同时继续利用自然语言检索。
-
 ## 支持的内容
 
 | 输入 | 导入方式 |
 |---|---|
 | PDF、DOCX、TXT、Markdown | 导入文件或同步目录 |
-| 客户端已获取的 HTML | 使用 `ingest_data`；通过 Readability 清理后转换为 Markdown |
+| 客户端已获取的 HTML | `ingest_data` |
 | 内存中的纯文本或 Markdown | 使用 `ingest_data`，并提供稳定的来源标识符 |
 
 服务器本身不负责获取 HTML。MCP 客户端可以先获取网页，再将 HTML 传给 `ingest_data`。
 
 文件导入不支持 Excel、PowerPoint、独立图片和源代码文件扩展名。PDF 可以选择使用本地视觉模型描述图像内容，但该功能不属于 OCR 或图片搜索。
 
-## MCP 工具
+## 使用索引
+
+添加、修改或删除文档后，请同步索引。搜索和补充上下文时，可以这样向 MCP 客户端提问：
+
+```text
+查找文档中对 ERR_CONNECTION_REFUSED 的说明。
+再读取这条结果前后的片段。
+```
+
+也可以导入单个文件，或客户端已经获取的 HTML。如需刷新已有条目，请用相同路径或来源标识重新导入；`sync` 会跳过未更改的文件。MCP 文件路径必须是绝对路径，且位于已配置的文档根目录内。
+
+PDF 的章节标题可能识别不准。需要准确的标题时，请核对原文所在页。
+
+<details>
+<summary>MCP 工具</summary>
 
 | 工具 | 用途 |
 |---|---|
@@ -153,108 +170,14 @@ CLI 默认将当前目录作为文档根目录。请在同一目录中运行这�
 | `delete_file` | 删除已建立索引的文件或 `ingest_data` 条目 |
 | `status` | 显示索引和搜索状态 |
 
-### 同步文档根目录
-
-`sync_start` 会导入新增和已修改的文件，跳过字节完全相同的文件，并删除已不存在文件的索引记录：
-
-```text
-同步已配置文档根目录中的所有内容，并等待完成。
-```
-
-该工具会立即返回 `jobId`。客户端应持续查询 `sync_status`，直到状态变为 `succeeded` 或 `failed`。发生变化的 PDF 会沿用索引时所用的模式重新导入；索引时未使用视觉模式的 PDF 仍按纯文本处理。`sync_start` 无法更改该模式。
-
-服务器进程只保留一个同步任务记录。新任务会替换已经结束的记录，服务器重启后该记录也会丢失。
-
-### 导入单个文件
-
-`ingest_file` 支持 PDF、DOCX、TXT 和 Markdown。通过 MCP 传入的文件路径必须是绝对路径，并且必须位于已配置的文档根目录内：
-
-```text
-导入 /Users/me/docs/api-spec.pdf。
-```
-
-再次导入同一路径会替换原有文本块。
-
-### 搜索并读取更多上下文
-
-```text
-API 文档如何说明身份验证？
-查找 ERR_CONNECTION_REFUSED 的文档说明。
-```
-
-搜索结果包含文本、来源路径、标题、文本块编号和相关度分数。需要更多上下文时，将结果中的 `chunkIndex` 以及 `filePath` 或 `source` 传给 `read_chunk_neighbors`：
-
-```text
-读取该身份验证结果前后的文本块。
-```
-
-`query_documents` 和 `list_files` 都接受可选的绝对 `scope` 路径前缀或前缀列表。前缀会匹配指定路径及其全部子路径。
-
-### 导入 HTML
-
-由 MCP 客户端获取网页后，再使用 `ingest_data`：
-
-```text
-获取 https://example.com/docs 并导入其中的 HTML。
-```
-
-服务器会提取正文、转换为 Markdown，并使用提供的来源标识符保存。再次使用同一来源会更新已有内容。
-
-为外部内容建立索引时，请遵守来源网站的条款和版权规定。
-
-### PDF 图像
-
-视觉模式会为图像内容较多的 PDF 页面生成说明文字。该功能需要主动开启，常规导入不会加载视觉模型。
-
-```text
-使用 visual: true 导入 /Users/me/docs/research-paper.pdf。
-```
-
-```bash
-npx mcp-local-rag ingest ./docs/research-paper.pdf --visual
-```
-
-| 模式 | 模型缓存 | 适用场景 |
-|---|---:|---|
-| `fast`（默认） | 约 250 MB | 轻量视觉索引 |
-| `quality` | 约 1.7 GB | 包含标签、标注或其他图中文字的图像 |
-
-通过 MCP 使用 `visualQuality: "quality"`，或通过 CLI 使用 `--visual-quality quality`，即可选择较大的模型。实测 CPU 推理耗时约为 `fast` 的三倍，但实际结果取决于硬件和模型更新。
-
-#### 更新已索引的 `quality` 说明文字
-
-从 0.18.4 起，`quality` 使用 Qwen3.5-2B，旧版本使用 Qwen2.5-VL-3B。已索引的说明文字仍是旧模型生成的内容，`sync` 不会重新生成，需要更新的文件请重新导入：
-
-```bash
-npx mcp-local-rag ingest ./docs/research-paper.pdf --visual --visual-quality quality
-```
-
-如果该文件当初是带 `--images` 导入的，请一并加上该选项，否则本次导入会替换已保存的图像。旧模型仍留在磁盘上。确认不再使用后，可删除模型缓存目录（`<cache-dir>`，默认为 `./models/`）下的 `onnx-community/Qwen2.5-VL-3B-Instruct-ONNX/`。
-
-#### 跨同步的视觉模式
-
-PDF 索引时所用的模式会被记录下来，`sync` 会沿用它：以 `fast` 或 `quality` 索引的 PDF 会按同一模式重新导入，没有记录模式的 PDF 按文本导入。
-
-```bash
-npx mcp-local-rag sync ./docs/                      # 沿用每个 PDF 记录的模式
-npx mcp-local-rag sync ./docs/ --visual             # 为范围内所有 PDF 请求 fast
-npx mcp-local-rag sync ./docs/ --visual --visual-quality quality
-```
-
-`--visual` 会覆盖已记录的模式，因此也会为按文本索引的 PDF 生成说明文字。更换模式后，即使文件本身没有变化，该 PDF 也会重新导入；再次执行同一命令则不做任何处理，也不加载模型。
-
-要关闭某个路径的说明文字，请对它执行 `ingest`：一次成功的常规导入会清除已记录的模式。要重试生成失败的页面，请执行 `ingest <路径> --visual --visual-quality <模式>` 并指定所需模式——只用 `ingest` 反而会清除它。如果一个 PDF 的索引记录中模式不一致，`sync` 会在做出任何更改前停止并指出该文件；使用 `--visual` 重新运行即可确定模式。
-
-生成的说明文字只是辅助文本，并非忠实的逐字转录。检索到的说明文字和文档文本都应视为不可信输入，而不是操作指令。
+</details>
 
 ## CLI
 
-CLI 无需 MCP 客户端，使用与服务器相同的解析器、嵌入器和向量存储：
+使用 CLI 更新索引、缩小搜索范围或删除已索引的内容：
 
 ```bash
-npx mcp-local-rag ingest ./docs/
 npx mcp-local-rag sync ./docs/
-npx mcp-local-rag query "身份验证 API"
 npx mcp-local-rag query "身份验证" --scope /docs/api --scope /docs/guide
 npx mcp-local-rag read-neighbors --file-path /abs/path.md --chunk-index 5
 npx mcp-local-rag list
@@ -262,6 +185,8 @@ npx mcp-local-rag status
 npx mcp-local-rag delete ./docs/old.pdf
 npx mcp-local-rag delete --source "https://example.com/docs"
 ```
+
+`ingest` 导入选定的文件；`sync` 还会从索引中移除已删除的文件，并跳过未更改的文件。`--scope` 按路径前缀限定搜索范围，重复传入可包含多个前缀。
 
 `--db-path`、`--cache-dir` 和 `--model-name` 等全局选项应放在子命令之前，子命令选项则放在子命令之后：
 
@@ -271,66 +196,15 @@ npx mcp-local-rag --db-path ./my-db query "身份验证"
 
 运行 `npx mcp-local-rag --help` 可查看完整命令说明。
 
-CLI 不读取 MCP 客户端配置。如果两个接口需要共用索引，请设置相同的环境变量或命令行参数。特别是共享同一数据库时，`MODEL_NAME` 必须与 CLI 的 `--model-name` 一致。
-
 `query` 会以 JSON 格式将结果写入 stdout，最匹配的结果排在最前，因此可以通过管道传给其他工具。各字段的定义见 [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json)。
 
-## 搜索调优
+如果要迁移项目并保留现有索引，请先停止 MCP 服务器和其他写入进程，将文件和数据库一起移到新位置，保持目录结构不变，然后运行：
 
-关键词加权默认开启。对于需要更严格筛选结果的语料库，还可以使用相关度间隔分组、距离过滤和文件数量限制。这四项对 MCP 服务器和 CLI 的 `query` 同样生效。
-
-| 变量 | 默认值 | 说明 |
-|----------|---------|-------------|
-| `RAG_HYBRID_WEIGHT` | `0.6` | 关键词加权系数（0.0–1.0）。0 表示禁用关键词重排，1 表示使用最大加权。 |
-| `RAG_GROUPING` | 未设置 | `similar` 保留第一个相关度分组；`related` 最多保留两个分组，并以明显的向量距离间隔为边界。 |
-| `RAG_MAX_DISTANCE` | 未设置 | 过滤相关度较低的结果（例如 `0.5`）。 |
-| `RAG_MAX_FILES` | 未设置 | 将结果限制在排名最靠前的 N 个文件中（例如 `1` 表示只保留最佳文件）。 |
-| `RAG_RERANK_CMD` | 未设置 | 仅 MCP 服务器：用于重排结果的外部命令。查询与命中片段的文本会发送给它。 |
-| `RAG_RERANK_TIMEOUT_MS` | `10000` | 单次重排的超时时间，单位为毫秒（100–600000）。 |
-
-对于包含大量标识符的 API 规范及类似文档，提高关键词权重可以改善精确术语的排名：
-
-```json
-"env": {
-  "RAG_HYBRID_WEIGHT": "0.7"
-}
+```bash
+npx mcp-local-rag --db-path /new/project/lancedb relocate --from /old/project --to /new/project
 ```
 
-- `0.7`：比默认值稍强的精确术语重排
-- `1.0`：最大关键词加权
-
-### 外部重排（`RAG_RERANK_CMD`）
-
-在此指定一个命令，服务器会把每一批搜索结果连同查询和命中片段的文本交给它重新排序。调用远程服务的命令会把这些内容发送到本机之外。
-
-填写命令及其参数，以空格分隔。它必须是可执行文件：服务器不经过 shell 启动它，因此 Windows 上由 npm 安装的 `.cmd` 包装脚本无法启动。
-
-```json
-"env": {
-  "RAG_RERANK_CMD": "/path/to/reranker",
-  "RAG_RERANK_TIMEOUT_MS": "10000"
-}
-```
-
-该命令收到的每条结果都是 [`docs/schema/query-output.schema.json`](docs/schema/query-output.schema.json) 中公开的形式，并且必须以同样的形式返回。在此范围内，保留哪些、如何排序、正文写什么都由命令决定，返回的内容会直接呈现给你。
-
-命令失败、超时，或返回的内容不符合该形式时，结果保持原有顺序。
-
-## 工作原理
-
-导入时：
-
-1. 解析器从输入格式中提取文本。
-2. 语义分块器识别主题边界，并保持 Markdown 代码块完整。
-3. Transformers.js 在本地生成嵌入向量。
-4. LanceDB 保存文本块、元数据、向量和全文索引。
-
-搜索时：
-
-1. 使用同一模型为查询生成嵌入向量。
-2. 向量搜索检索语义相关的文本块。
-3. 配置后，可使用距离过滤和相关度分组进一步缩小候选范围。
-4. 全文匹配会提高精确查询词的排名。
+在 MCP 配置中更新 `BASE_DIR`/`BASE_DIRS`、`DB_PATH` 及其他受影响的路径，再重启客户端。
 
 ## Agent Skills
 
@@ -344,66 +218,119 @@ npx mcp-local-rag skills install --codex
 
 安装的技能涵盖查询写法、结果优化和 HTML 导入。如果技能没有自动启用，请明确要求助手使用 mcp-local-rag 技能。
 
-## 配置
+## 进阶选项
 
-MCP 服务器读取环境变量。CLI 支持相同的变量和下表所列的命令行参数；命令行参数优先级更高。
+先使用默认设置即可。需要多个文档根目录、调整检索效果或搜索 PDF 图表时，再展开下面的相应章节。
+
+<details>
+<summary>存储与文档根目录</summary>
+
+MCP 服务器读取环境变量，CLI 支持下表中的变量和参数。需要共用索引时，请使用相同的 `DB_PATH`。
 
 | 环境变量 | CLI 参数 | 默认值 | 说明 |
 |---------------------|----------|---------|-------------|
 | `BASE_DIR` | `--base-dir` | 当前目录 | 一个文档根目录；`ingest`、`list` 和 `sync` 可重复使用该 CLI 参数 |
 | `BASE_DIRS` | 不适用 | 未设置 | 文档根目录的 JSON 数组；优先于 `BASE_DIR` |
+| `IGNORE_PATHS` | 不适用 | 未设置 | 不建立索引的文件的 glob 模式 JSON 数组 |
 | `DB_PATH` | `--db-path` | `./lancedb/` | 向量数据库位置 |
 | `CACHE_DIR` | `--cache-dir` | `./models/` | 模型缓存目录 |
 | `HF_ENDPOINT` | 不适用 | `https://huggingface.co` | Hugging Face 模型下载地址；无法直接下载时使用镜像地址 |
-| `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Hugging Face 嵌入模型 |
 | `MAX_FILE_SIZE` | `--max-file-size` | `104857600`（100 MB） | 最大文件大小（字节） |
+
+文件操作仅限已配置的根目录。多个目录可用 `BASE_DIRS='["/absolute/docs","/absolute/specs"]'`，或在 CLI 中重复传入 `--base-dir`。优先级依次为 CLI 根目录、`BASE_DIRS`、`BASE_DIR`、当前目录。只采用优先级最高的配置来源，不会合并不同来源的根目录。无效的 `BASE_DIRS` 会报错。相对的 `DB_PATH` 和 `CACHE_DIR` 以进程工作目录为起点。
+
+如需让某些文件不进入索引，可将 `IGNORE_PATHS` 设为 glob 模式的 JSON 数组，例如 `IGNORE_PATHS='["plugs/**","**/*.draft.md"]'`。每个模式与文件相对于其所在文档根目录的路径进行匹配，在所有操作系统上都用 `/` 书写。`*` 和 `**` 不匹配以 `.` 开头的名称，这类目录需要写全，例如 `".obsidian/**"`。`ingest`、`list` 和 `sync` 扫描目录时会跳过匹配的文件，`sync` 还会从索引中移除已建立索引的匹配文件。无效的 `IGNORE_PATHS` 会报错。
+
+</details>
+
+<details>
+<summary>模型与搜索调优</summary>
+
+根据文档的语言和主题选择嵌入模型。用实际会问的问题比较设置，检查返回的原文是否符合需求。本工具使用平均池化（mean pooling）和 L2 归一化生成嵌入向量，请选择兼容这两种处理方式的模型。
+
+| 环境变量 | CLI 参数 | 默认值 | 说明 |
+|---------------------|----------|---------|-------------|
+| `MODEL_NAME` | `--model-name` | `Xenova/all-MiniLM-L6-v2` | Hugging Face 嵌入模型 |
 | `CHUNK_MIN_LENGTH` | `--chunk-min-length` | `50` | 普通文本块的最小字符数（1–10000）；为适配模型词元上限而切分出的片段可以更短 |
+| `EMBED_TITLE_PREFIX` | 不适用 | `false` | 将文档标题加入每个文本块的嵌入输入 |
+| `EMBED_HEADING_PREFIX` | 不适用 | `false` | 在词元上限允许的情况下，将章节标题层级加入每个文本块的嵌入输入 |
 | `RAG_DEVICE` | 不适用 | `cpu` | ONNX Runtime 执行设备 |
 | `RAG_DTYPE` | 不适用 | `fp32` | 传给所选模型的嵌入数据类型 |
 
-### 文档根目录（`BASE_DIR` 和 `BASE_DIRS`）
+两个前缀选项默认均为 `false`，可独立使用。文本块缺少文档整体主题时，可尝试 `EMBED_TITLE_PREFIX`；缺少所在章节的主题时，可尝试 `EMBED_HEADING_PREFIX`。同时启用两项不一定更好。它们影响嵌入，不改变返回的文本或关键词索引；章节上下文超出输入预算时会被省略。
 
-mcp-local-rag 只允许在已配置的根目录中执行文件操作。需要使用多个根目录时，`BASE_DIRS` 必须是由非空路径组成的 JSON 数组：
+更换嵌入模型时，请使用新的 `DB_PATH` 重建索引。不同模型生成的向量无法直接比较，即使维度相同也是如此。更改 `RAG_DTYPE` 或任一前缀选项后，请先重新导入所有已建立索引的文档，再进行搜索。`sync` 会跳过未更改的文件。
 
-```bash
-export BASE_DIRS='["/Users/me/Documents/work","/Users/me/Projects/specs"]'
+CLI 不读取 MCP 客户端配置。共用索引时，导入和搜索必须使用相同的模型、`RAG_DTYPE` 和前缀设置。仅更改 `RAG_DEVICE` 不需要重建索引。
+
+### 搜索调优
+
+表中前四项设置同时适用于 MCP 和 CLI。若希望更看重精确术语匹配，可以尝试提高 `RAG_HYBRID_WEIGHT`，并用自己的问题比较结果。外部重排仅适用于 MCP。
+
+| 变量 | 默认值 | 说明 |
+|----------|---------|-------------|
+| `RAG_HYBRID_WEIGHT` | `0.6` | 关键词加权系数（0.0–1.0）。0 表示禁用关键词重排，1 表示使用最大加权。|
+| `RAG_GROUPING` | 未设置 | `similar` 保留第一个相关度分组；`related` 最多保留两个分组，并以明显的向量距离间隔为边界。|
+| `RAG_MAX_DISTANCE` | 未设置 | 过滤相关度较低的结果（例如 `0.5`）。|
+| `RAG_MAX_FILES` | 未设置 | 将结果限制在排名最靠前的 N 个文件中（例如 `1` 表示只保留最佳文件）。|
+| `RAG_RERANK_CMD` | 未设置 | 仅 MCP：外部命令；`{query}` 传入查询，`{top}` 传入请求的结果数量。|
+| `RAG_RERANK_TIMEOUT_MS` | `10000` | 单次重排的超时时间，单位为毫秒（100–600000）。|
+
+### 外部重排（`RAG_RERANK_CMD`）
+
+命令通过标准输入接收搜索结果及命中文本。如果命令调用远程服务，这些文本可能会被发送到本机之外。
+
+填写可执行文件及完整的参数模板，在命令需要查询和结果数量的位置使用 `{query}` 和 `{top}`。单引号或双引号可将含空格的路径或参数组合在一起，反斜杠按字面保留。服务器不经过 shell 启动命令，因此 Windows 上由 npm 安装的 `.cmd` 包装脚本无法启动。
+
+```json
+{
+  "env": {
+    "RAG_RERANK_CMD": "/path/to/reranker --query {query} --top {top}",
+    "RAG_RERANK_TIMEOUT_MS": "10000"
+  }
+}
 ```
 
-根目录配置按以下优先顺序解析：
+命令必须按[输出 schema](docs/schema/query-output.schema.json) 规定的格式读取和返回结果。它可以删除结果、调整顺序或修改文本，服务器会返回命令的输出。
 
-1. CLI 的 `--base-dir <path>` 参数（可在 `ingest`、`list` 和 `sync` 中重复使用）
-2. `BASE_DIRS`
-3. `BASE_DIR`
-4. 当前目录
+如果命令失败、超时或返回的数据不符合 schema，结果将保留原有顺序。
 
-每一级配置都会完全取代优先级更低的配置，而不是与其合并。无效的 `BASE_DIRS` 会直接报错，不会回退到 `BASE_DIR` 或当前目录。即使配置有误，MCP 中的 `status` 仍然可用，因此客户端可以报告具体问题。
+</details>
+
+<details>
+<summary>PDF 图表与图片存储</summary>
+
+默认情况下，导入只为文本建立索引。如需搜索 PDF 图表内容，可在 MCP 中设置 `visual: true`，或在 CLI 中使用 `--visual`，由本地模型生成描述。描述不等同于 OCR 或逐字转录。
+
+`fast`（默认）首次使用需下载约 250 MB。图表中有标签或文字时，可选择 `quality`；首次需下载约 1.7 GB，处理也更慢。
+
+MCP 使用 `visualQuality: "quality"` 选择配置，CLI 使用 `--visual-quality quality`。
 
 ```bash
-npx mcp-local-rag ingest --base-dir /Users/me/work --base-dir /Users/me/specs /Users/me/work/readme.md
-npx mcp-local-rag list --base-dir /Users/me/work --base-dir /Users/me/specs
-npx mcp-local-rag sync --base-dir /Users/me/work --base-dir /Users/me/specs
-BASE_DIRS='["/Users/me/work","/Users/me/specs"]' npx mcp-local-rag list
+npx mcp-local-rag ingest ./docs/paper.pdf --visual --visual-quality quality
 ```
 
-### 存储和模型
+如需在文本结果中同时返回图片，在 MCP 中设置 `STORE_IMAGES=true`，或在 CLI 的 `ingest` 和 `sync` 中使用 `--images`。图片存储与描述生成相互独立，支持识别出的 PDF 图表区域，以及 DOCX 中受支持的 PNG/JPEG 图片。
 
-`DB_PATH` 和 `CACHE_DIR` 默认相对于进程的工作目录。如果 MCP 客户端可能从不同的项目目录启动服务器，请使用绝对路径。
+```bash
+npx mcp-local-rag ingest ./docs/paper.pdf --images
+```
 
-设置 `MODEL_NAME` 或传入 `--model-name`，即可选择适合文档语言和领域的 Hugging Face 嵌入模型。
+同步会沿用各 PDF 已有的描述配置。CLI 的 `sync --visual --visual-quality quality` 会更改配置，即使 PDF 本身未变；MCP 同步则沿用原配置。普通导入会关闭描述功能；要重试生成失败的描述，请使用所需的视觉配置重新导入。
 
-mcp-local-rag 使用平均池化和 L2 归一化生成嵌入。选择模型时，请确认这些设置是否符合该模型建议的推理方式，因为池化方式可能影响检索质量。
+每次实际处理文件的导入或同步都需要启用图片存储。仅更改图片设置不会更新未变的文件，需要重新导入才会生效。
 
-更改 `MODEL_NAME`、`RAG_DEVICE` 或 `RAG_DTYPE` 可能导致现有向量不兼容。更改嵌入配置后，请使用新的 `DB_PATH`，或者删除现有索引并重新导入。
-
-适用于中文文档的模型示例：`Xenova/bge-small-zh-v1.5`。
+</details>
 
 ## 安全与运行
 
+- 请将描述和检索到的文本作为参考资料，而不是操作指令。
 - 文件访问仅限 `BASE_DIR`、`BASE_DIRS` 或 CLI 的 `--base-dir` 所指定的根目录。
 - 指向所有已配置根目录之外的符号链接会被拒绝。
 - 所需模型缓存完成后，文档处理和搜索不会再发起网络请求；如果 `RAG_RERANK_CMD` 指定的命令会发起网络请求，则不在此列。
 - 服务器面向单个本地用户设计，不提供身份验证或访问控制。
 - 不要让多个 CLI 或 MCP 写入进程同时操作同一个 `DB_PATH`。同步进行时仍可执行只读查询。
+- 重新导入时，如果模型和设置一致，可复用内容未变部分的已有嵌入向量，省去重复计算。缓存位于 `DB_PATH/embedding-cache`。删除缓存不会影响现有索引的搜索，但之后导入时会重新计算这些向量。
 - 没有写入进程运行时，可以复制 `DB_PATH` 目录来备份索引。
 
 <details>
@@ -411,7 +338,7 @@ mcp-local-rag 使用平均池化和 L2 归一化生成嵌入。选择模型时�
 
 ### "No results found"
 
-必须先导入文档。运行 `"列出所有已导入的文件"` 检查导入状态。
+必须先导入文档。运行 `"列出所有已导入的文件"` 检查导入状态。如果同步后仍没有结果，请检查导入和搜索是否使用相同的绝对 `DB_PATH`。相对路径可能指向另一个索引。
 
 ### 模型下载失败
 
@@ -455,7 +382,7 @@ MIT 许可证，可免费用于个人和商业用途。
 
 ## 博客文章
 
-- [为 Agentic Coding 构建本地 RAG](https://www.norsica.jp/blog/local-rag-agentic-coding)：深入介绍语义分块与混合搜索的技术设计。
+- [Building a Local RAG for Agentic Coding（英文）](https://www.norsica.jp/blog/local-rag-agentic-coding)：深入介绍语义分块与混合搜索的技术设计。
 
 ## 致谢
 

@@ -35,11 +35,18 @@ export interface SemanticChunkerConfig {
  * skips token containment.
  */
 export interface EmbedderInterface {
-  embedBatch(texts: string[]): Promise<number[][]>
+  /** `'document'` embeds behind the model's document prompt; omitted, its default prompt. */
+  embedBatch(texts: string[], role?: 'document'): Promise<number[][]>
   /** Resolved token cap, or `null` when no limit could be resolved. */
   getTokenLimit?(): Promise<number | null>
-  /** True, unclamped token lengths of each text. */
-  countTokens?(texts: string[]): Promise<number[]>
+  /** True, unclamped token lengths of each text, prompt included. */
+  countTokens?(texts: string[], role?: 'document'): Promise<number[]>
+  /** The model's document prompt, or `''`. */
+  getDocumentPrompt?(): Promise<string>
+  /** Whether ingestion embeds chunks behind their document title. */
+  readonly titlePrefix?: boolean
+  /** Whether ingestion adds section paths to the final embedding input. */
+  readonly headingPrefix?: boolean
 }
 
 // ============================================
@@ -113,9 +120,13 @@ function joinUnits(units: readonly SentenceUnit[]): string {
 /**
  * The embedder's token budget, or `null` when the optional members are absent
  * or no limit could be resolved. Containment is then skipped entirely.
+ *
+ * Every measurement is taken with `textPrefix` prepended and the document
+ * prompt applied, since the caller embeds each chunk behind both.
  */
-async function resolveContainmentBudget(
-  embedder: EmbedderInterface
+export async function resolveContainmentBudget(
+  embedder: EmbedderInterface,
+  textPrefix: string
 ): Promise<ContainmentBudget | null> {
   const { getTokenLimit, countTokens } = embedder
   if (!getTokenLimit || !countTokens) {
@@ -125,7 +136,15 @@ async function resolveContainmentBudget(
   if (cap === null) {
     return null
   }
-  return { cap, countTokens: (texts) => countTokens.call(embedder, texts) }
+  return {
+    cap,
+    countTokens: (texts) =>
+      countTokens.call(
+        embedder,
+        texts.map((text) => textPrefix + text),
+        'document'
+      ),
+  }
 }
 
 /** One measurement pass over `texts`, rejecting a counter that drops inputs. */
@@ -237,12 +256,15 @@ export class SemanticChunker {
   }
 
   /**
-   * Split text into semantically coherent chunks
+   * Split text into semantically coherent chunks. `textPrefix` is the text the
+   * caller will prepend to each chunk before embedding; it is not added to the
+   * returned chunks, but token containment budgets for it.
    */
   async chunkText(
     text: string,
     embedder: EmbedderInterface,
-    atomicRanges: readonly AtomicTextRange[] = []
+    atomicRanges: readonly AtomicTextRange[] = [],
+    textPrefix = ''
   ): Promise<TextChunk[]> {
     // Handle empty input
     if (!text || text.trim().length === 0) {
@@ -260,7 +282,7 @@ export class SemanticChunker {
       return []
     }
 
-    const budget = await resolveContainmentBudget(embedder)
+    const budget = await resolveContainmentBudget(embedder, textPrefix)
     const units = budget ? await containUnits(sentenceUnits, budget) : sentenceUnits
 
     // Generate embeddings for all sentences

@@ -1,6 +1,7 @@
 import { JSDOM } from 'jsdom'
 import JSZip from 'jszip'
 import type { AtomicTextRange } from '../chunker/index.js'
+import type { HeadingAnchor, SourceMap } from '../utils/source-context.js'
 
 const CORE_TITLE_NAMESPACE = 'http://purl.org/dc/elements/1.1/'
 const PROSE_BLOCK_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'BLOCKQUOTE', 'PRE'])
@@ -11,12 +12,14 @@ const IMAGE_MARKER_SUFFIX = '\u0000'
 const IMAGE_MARKER_PATTERN = new RegExp(`${IMAGE_MARKER_PREFIX}(\\d+)${IMAGE_MARKER_SUFFIX}`, 'gu')
 
 export interface DocxBodyResult {
+  sourceMap?: SourceMap
   content: string
   atomicRanges: readonly AtomicTextRange[]
   imageAnchors?: readonly { offset: number; imageIndex: number }[]
 }
 
 interface EmittedBlock {
+  headingLevel?: number
   text: string
   atomic: boolean
 }
@@ -319,9 +322,13 @@ function emitDocumentBlocks(document: Document): EmittedBlock[] {
   const blocks: EmittedBlock[] = []
 
   /** Push one non-empty prose block. */
-  const pushText = (text: string): void => {
+  const pushText = (text: string, tag = ''): void => {
     if (text) {
-      blocks.push({ text, atomic: false })
+      blocks.push({
+        text,
+        atomic: false,
+        ...(/^H[1-6]$/.test(tag) ? { headingLevel: Number(tag[1]) } : {}),
+      })
     }
   }
 
@@ -331,7 +338,7 @@ function emitDocumentBlocks(document: Document): EmittedBlock[] {
     }
     const serialize = blockSerializerFor(element)
     if (serialize !== null) {
-      pushText(serialize(element))
+      pushText(serialize(element), element.tagName)
       return
     }
     if (element.tagName === 'TABLE') {
@@ -425,6 +432,7 @@ interface ImageAnchor {
 
 export function convertDocxDocumentToText(document: Document): DocxBodyResult {
   let content = ''
+  const headings: HeadingAnchor[] = []
   const atomicRanges: AtomicTextRange[] = []
   const imageAnchors: ImageAnchor[] = []
 
@@ -445,6 +453,9 @@ export function convertDocxDocumentToText(document: Document): DocxBodyResult {
       content += '\n\n'
     }
     const start = content.length
+    if (block.headingLevel) {
+      headings.push({ offset: start, level: block.headingLevel, text: blockText })
+    }
     imageAnchors.push(...anchorsWithinBlock(block.text, matches, start))
     content += blockText
     if (block.atomic) {
@@ -455,6 +466,7 @@ export function convertDocxDocumentToText(document: Document): DocxBodyResult {
   const uniqueImageAnchors = dedupeAnchors(imageAnchors)
   return {
     content,
+    ...(headings.length ? { sourceMap: { headings } } : {}),
     atomicRanges,
     ...(uniqueImageAnchors.length === 0 ? {} : { imageAnchors: uniqueImageAnchors }),
   }

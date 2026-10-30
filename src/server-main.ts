@@ -1,6 +1,7 @@
 // MCP Server entry point
 import {
   type ParseResult,
+  parseBooleanEnv,
   parseGroupingMode,
   parseHybridWeight,
   parseMaxDistance,
@@ -10,7 +11,12 @@ import {
   resolveEmbeddingServerUrl,
 } from './cli/options.js'
 import { RAGServer } from './server/index.js'
-import { BaseDirsConfigError, parseBaseDirsEnv, resolveBaseDirs } from './utils/base-dirs.js'
+import {
+  BaseDirsConfigError,
+  parseBaseDirsEnv,
+  parseIgnorePathsEnv,
+  resolveBaseDirs,
+} from './utils/base-dirs.js'
 import {
   DEFAULT_MAX_FILE_SIZE,
   DEFAULT_RERANK_TIMEOUT_MS,
@@ -32,7 +38,7 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
   if (!value) {
     return { value: undefined }
   }
-  const parsed = Number.parseInt(value, 10)
+  const parsed = /^\d+$/.test(value) ? Number(value) : Number.NaN
   if (Number.isNaN(parsed) || parsed < 1 || parsed > MAX_CHUNK_MIN_LENGTH) {
     const warning = `Invalid CHUNK_MIN_LENGTH value: "${value.slice(0, 100)}". Expected integer between 1 and ${MAX_CHUNK_MIN_LENGTH}. Ignoring.`
     return { value: undefined, warning }
@@ -41,21 +47,8 @@ export function parseChunkMinLength(value: string | undefined): ParseResult<numb
 }
 
 /** Parse the independent PDF image-storage toggle. */
-export function parseStoreImages(value: string | undefined): ParseResult<boolean> {
-  const normalized = value?.trim().toLowerCase() ?? ''
-  if (normalized.length === 0) {
-    return { value: false }
-  }
-  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
-    return { value: true }
-  }
-  if (['0', 'false', 'no', 'off'].includes(normalized)) {
-    return { value: false }
-  }
-  return {
-    value: false,
-    warning: `Invalid STORE_IMAGES value: "${value?.slice(0, 100)}". Expected one of 1, true, yes, on, 0, false, no, or off. Using false.`,
-  }
+export function parseStoreImages(value: string | undefined): ReturnType<typeof parseBooleanEnv> {
+  return parseBooleanEnv('STORE_IMAGES', value)
 }
 
 /**
@@ -176,11 +169,14 @@ async function resolveRoots(env: NodeJS.ProcessEnv, cwd: string): Promise<Resolv
 
 function resolveMaxFileSize(env: NodeJS.ProcessEnv): { value: number; warning?: string } {
   const raw = env['MAX_FILE_SIZE']
-  const parsed = raw ? Number(raw) : DEFAULT_MAX_FILE_SIZE
+  if (!raw) {
+    return { value: DEFAULT_MAX_FILE_SIZE }
+  }
+  const parsed = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_FILE_SIZE_LIMIT) {
     return {
       value: DEFAULT_MAX_FILE_SIZE,
-      warning: `Invalid MAX_FILE_SIZE value: "${raw?.slice(0, 100)}". Expected integer between 1 and ${MAX_FILE_SIZE_LIMIT}. Using default (${DEFAULT_MAX_FILE_SIZE}).`,
+      warning: `Invalid MAX_FILE_SIZE value: "${raw.slice(0, 100)}". Expected integer between 1 and ${MAX_FILE_SIZE_LIMIT}. Using default (${DEFAULT_MAX_FILE_SIZE}).`,
     }
   }
   return { value: parsed }
@@ -197,6 +193,8 @@ function applyOptionalSettings(config: ServerConfig, env: NodeJS.ProcessEnv): st
   const hybridWeight = parseHybridWeight(env['RAG_HYBRID_WEIGHT'])
   const chunkMinLength = parseChunkMinLength(env['CHUNK_MIN_LENGTH'])
   const storeImages = parseStoreImages(env['STORE_IMAGES'])
+  const titlePrefix = parseBooleanEnv('EMBED_TITLE_PREFIX', env['EMBED_TITLE_PREFIX'])
+  const headingPrefix = parseBooleanEnv('EMBED_HEADING_PREFIX', env['EMBED_HEADING_PREFIX'])
   const rerankCommand = parseRerankCmd(env['RAG_RERANK_CMD'])
   const rerankTimeoutMs = parseRerankTimeoutMs(env['RAG_RERANK_TIMEOUT_MS'])
 
@@ -218,7 +216,9 @@ function applyOptionalSettings(config: ServerConfig, env: NodeJS.ProcessEnv): st
   if (rerankCommand.value !== undefined) {
     config.rerankCommand = rerankCommand.value
   }
-  config.storeImages = storeImages.value ?? false
+  config.storeImages = storeImages.value
+  config.titlePrefix = titlePrefix.value
+  config.headingPrefix = headingPrefix.value
   config.rerankTimeoutMs = rerankTimeoutMs.value ?? DEFAULT_RERANK_TIMEOUT_MS
 
   return [
@@ -228,6 +228,8 @@ function applyOptionalSettings(config: ServerConfig, env: NodeJS.ProcessEnv): st
     hybridWeight,
     chunkMinLength,
     storeImages,
+    titlePrefix,
+    headingPrefix,
     rerankCommand,
     rerankTimeoutMs,
   ]
@@ -244,6 +246,11 @@ export async function resolveServerConfig(
   cwd: string
 ): Promise<ServerConfig> {
   const roots = await resolveRoots(env, cwd)
+  // Fail closed: starting without the exclusion would index the files it names.
+  const ignorePatterns = parseIgnorePathsEnv(env['IGNORE_PATHS'])
+  if (!ignorePatterns.ok) {
+    throw new Error(ignorePatterns.message)
+  }
   const maxFileSize = resolveMaxFileSize(env)
   const configWarnings = [...roots.warnings]
   if (maxFileSize.warning !== undefined) {
@@ -256,6 +263,7 @@ export async function resolveServerConfig(
     cacheDir: env['CACHE_DIR'] || './models/',
     baseDirs: roots.baseDirs,
     rawBaseDirs: roots.rawBaseDirs,
+    ignorePatterns: ignorePatterns.value,
     maxFileSize: maxFileSize.value,
     device: resolveDevice(env['RAG_DEVICE']),
 

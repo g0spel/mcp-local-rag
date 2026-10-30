@@ -3,6 +3,7 @@ import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import type { DocumentParser } from '../parser/index.js'
 import type { FilteredTextFragment } from '../parser/pdf-filter.js'
 import type { DetectedVisualRegion, ProcessedVisualRegion } from '../pdf-visual/types.js'
+import type { HeadingAnchor, SourceMap } from '../utils/source-context.js'
 import type { QualityProfile } from '../utils/visual-profile.js'
 import type { VisualAttachment } from '../vectordb/types.js'
 import { buildChunksAndEmbeddings, createVisualAttachment, findNearestChunk } from './compute.js'
@@ -30,7 +31,7 @@ export interface PrepareVisualPdfChunksOptions {
 }
 
 export interface PrepareVisualPdfChunksResult {
-  chunks: TextChunk[]
+  chunks: Awaited<ReturnType<typeof buildChunksAndEmbeddings>>['chunks']
   embeddings: number[][]
   title: string | null
   text: string
@@ -40,6 +41,7 @@ export interface PrepareVisualPdfChunksResult {
 }
 
 export interface OrderedVisualPage {
+  headings?: HeadingAnchor[]
   pageNum: number
   text: string
   textFragments: readonly FilteredTextFragment[]
@@ -52,6 +54,7 @@ export interface OrderedVisualRegion extends ProcessedVisualRegion {
 }
 
 export interface OrderedVisualDocument {
+  sourceMap?: SourceMap
   text: string
   atomicRanges: AtomicTextRange[]
   regions: OrderedVisualRegion[]
@@ -164,6 +167,7 @@ function groupByInsertionOffset(
 
 /** Page text with captions spliced in, plus where each region landed. */
 interface RenderedPage {
+  headings: HeadingAnchor[]
   pageText: string
   captionRanges: Map<ProcessedVisualRegion, AtomicTextRange>
   anchorOffsets: Map<ProcessedVisualRegion, number>
@@ -216,6 +220,7 @@ function renderPageWithCaptions(
 ): RenderedPage {
   let pageText = ''
   let pageCursor = 0
+  const shifts: { offset: number; delta: number }[] = []
   const captionRanges = new Map<ProcessedVisualRegion, AtomicTextRange>()
   const anchorOffsets = new Map<ProcessedVisualRegion, number>()
 
@@ -234,11 +239,18 @@ function renderPageWithCaptions(
     if (hasCaption && offset < page.text.length) {
       pageText += blankLinePadding(page.text.slice(offset))
     }
+    shifts.push({ offset, delta: pageText.length - offset })
     pageCursor = offset
   }
   pageText += page.text.slice(pageCursor)
 
-  return { pageText, captionRanges, anchorOffsets }
+  const headings = (page.headings ?? []).map((heading) => ({
+    ...heading,
+    offset:
+      heading.offset +
+      (shifts.filter((shift) => shift.offset <= heading.offset).at(-1)?.delta ?? 0),
+  }))
+  return { pageText, captionRanges, anchorOffsets, headings }
 }
 
 /** Rebase one page-relative region onto the whole-document text. */
@@ -269,6 +281,7 @@ export function buildOrderedVisualDocument(
   processedRegions: readonly ProcessedVisualRegion[]
 ): OrderedVisualDocument {
   let text = ''
+  const sourceMap: SourceMap = { headings: [], pages: [] }
   let visualIndex = 0
   const atomicRanges: AtomicTextRange[] = []
   const regions: OrderedVisualRegion[] = []
@@ -286,6 +299,12 @@ export function buildOrderedVisualDocument(
     const pageSeparator = text.length > 0 && rendered.pageText.length > 0 ? '\n\n' : ''
     const pageStart = text.length + pageSeparator.length
     text += pageSeparator + rendered.pageText
+    if (rendered.pageText) {
+      sourceMap.pages?.push({ start: pageStart, end: text.length, page: page.pageNum })
+    }
+    sourceMap.headings.push(
+      ...rendered.headings.map((heading) => ({ ...heading, offset: pageStart + heading.offset }))
+    )
 
     for (const positionedRegion of positioned) {
       const record = toOrderedRegion(positionedRegion.region, rendered, pageStart, visualIndex++)
@@ -301,7 +320,7 @@ export function buildOrderedVisualDocument(
     throw new Error('A processed visual region has no matching PDF page')
   }
 
-  return { text, atomicRanges, regions }
+  return { text, atomicRanges, regions, sourceMap }
 }
 
 function assignVisualAttachments(
@@ -425,7 +444,7 @@ export async function prepareVisualPdfChunks(
 ): Promise<PrepareVisualPdfChunksResult> {
   const { parser, chunker, embedder } = collaborators
   const captionerConfig = options.captioner
-  const { doc, title, pages } = await parser.parsePdfPages(filePath, embedder)
+  const { doc, title, embeddingTitle, pages } = await parser.parsePdfPages(filePath, embedder)
   try {
     let omittedImageCount = 0
 
@@ -434,12 +453,11 @@ export async function prepareVisualPdfChunks(
     omittedImageCount += detected.omittedImageCount
 
     const ordered = buildOrderedVisualDocument(pages, processed)
-    const { chunks, embeddings } = await buildChunksAndEmbeddings(
-      ordered.text,
-      chunker,
-      embedder,
-      ordered.atomicRanges
-    )
+    const { chunks, embeddings } = await buildChunksAndEmbeddings(ordered.text, chunker, embedder, {
+      sourceMap: ordered.sourceMap,
+      atomicRanges: ordered.atomicRanges,
+      title: embeddingTitle,
+    })
     const collected = options.images
       ? collectAttachments(ordered.regions)
       : { attachments: [], omittedImageCount: 0 }

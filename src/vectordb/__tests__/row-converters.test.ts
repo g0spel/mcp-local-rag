@@ -13,7 +13,6 @@ const ROW = {
   chunkIndex: 0,
   text: 'body',
   timestamp: '2026-01-01T00:00:00.000Z',
-  metadata: { fileName: 'a.md', fileSize: 4, fileType: 'md' },
 }
 
 describe('toVectorChunk embedding read', () => {

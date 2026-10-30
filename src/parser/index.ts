@@ -9,10 +9,12 @@ import type { Document as MupdfDocument } from 'mupdf'
 import { type AtomicTextRange, SemanticChunker } from '../chunker/index.js'
 import { withTrailingSeparator } from '../utils/base-dirs.js'
 import { AppError, isAppError, toError } from '../utils/errors.js'
+import type { HeadingAnchor, SourceMap } from '../utils/source-context.js'
 import { errorCode } from '../utils/type-guards.js'
 import { convertDocxDocumentToText, extractDocxCoreTitle } from './docx-parser.js'
 import { extractPdfPages } from './pdf-extract.js'
 import type { EmbedderInterface, FilteredTextFragment } from './pdf-filter.js'
+import { textSourceMap } from './text-source-map.js'
 import {
   extractDocxTitle,
   extractMarkdownTitle,
@@ -37,11 +39,18 @@ export const SUPPORTED_EXTENSIONS = new Set(['.pdf', '.docx', '.txt', '.md'])
 
 /**
  * Result from parsing a document, containing both content and extracted title.
- * Title is display-only metadata (NOT used for search scoring).
+ * Title is display metadata; it reaches search only through the opt-in
+ * embedding title prefix.
  */
 export interface ParseResult {
+  sourceMap?: SourceMap
   content: string
   title: string
+  /**
+   * Title for the embedding prefix; `title` is used when absent. PDFs set it
+   * so a display title taken from page-1 body text embeds as the file name.
+   */
+  embeddingTitle?: string
   atomicRanges?: readonly AtomicTextRange[]
   imageAnchors?: readonly ParsedImageAnchor[]
 }
@@ -63,12 +72,18 @@ interface PdfTitleHints {
   page1FontHint: { text: string; fontSize: number } | undefined
 }
 
+/** Display title, and the title to embed behind (the same order minus page-1 body text). */
+interface ResolvedPdfTitle {
+  title: string
+  embeddingTitle: string
+}
+
 async function resolvePdfTitle(
   filePath: string,
   pages: readonly { text: string }[],
   hints: PdfTitleHints,
   embedder: EmbedderInterface
-): Promise<string> {
+): Promise<ResolvedPdfTitle> {
   const { metadataTitle, page1FontHint } = hints
   const fileName = basename(filePath)
   let firstPageChunkText: string | undefined
@@ -84,7 +99,10 @@ async function resolvePdfTitle(
     }
     console.error(`Title extraction failed, falling back to filename: ${titleError}`)
   }
-  return extractPdfTitle(metadataTitle, firstPageChunkText, fileName, page1FontHint).title
+  return {
+    title: extractPdfTitle(metadataTitle, firstPageChunkText, fileName, page1FontHint).title,
+    embeddingTitle: extractPdfTitle(metadataTitle, undefined, fileName, page1FontHint).title,
+  }
 }
 
 /**
@@ -302,12 +320,24 @@ export class DocumentParser {
         embedder,
         'preserve-whitespace'
       )
-      const text = pages
-        .map((p) => p.text)
-        .filter((t) => t.length > 0)
-        .join('\n\n')
+      let text = ''
+      const sourceMap: SourceMap = { headings: [], pages: [] }
+      for (const page of pages) {
+        if (!page.text) {
+          continue
+        }
+        if (text) {
+          text += '\n\n'
+        }
+        const start = text.length
+        text += page.text
+        sourceMap.pages?.push({ start, end: text.length, page: page.pageNum })
+        sourceMap.headings.push(
+          ...page.headings.map((heading) => ({ ...heading, offset: start + heading.offset }))
+        )
+      }
 
-      const title = await resolvePdfTitle(
+      const { title, embeddingTitle } = await resolvePdfTitle(
         filePath,
         pages,
         { metadataTitle, page1FontHint },
@@ -316,7 +346,7 @@ export class DocumentParser {
 
       console.error(`Parsed PDF: ${filePath} (${text.length} characters, ${pages.length} pages)`)
 
-      return { content: text, title }
+      return { content: text, title, embeddingTitle, sourceMap }
     } catch (error) {
       // A foreign domain error (an `EmbeddingError` raised while the parser
       // used the embedder) keeps its identity rather than being relabelled a
@@ -347,8 +377,10 @@ export class DocumentParser {
   ): Promise<{
     doc: MupdfDocument
     title: string
+    embeddingTitle: string
     pages: Array<{
       pageNum: number
+      headings?: HeadingAnchor[]
       text: string
       textFragments: FilteredTextFragment[]
       stextJson: unknown
@@ -374,11 +406,12 @@ export class DocumentParser {
       const { pages: helperPages, metadataTitle, page1FontHint } = extracted
       const pages = helperPages.map((page) => ({
         pageNum: page.pageNum,
+        headings: page.headings,
         text: page.text,
         textFragments: page.textFragments,
         stextJson: page.stextJson,
       }))
-      const title = await resolvePdfTitle(
+      const { title, embeddingTitle } = await resolvePdfTitle(
         filePath,
         helperPages,
         { metadataTitle, page1FontHint },
@@ -389,7 +422,7 @@ export class DocumentParser {
         `Parsed PDF pages: ${filePath} (${pages.length} pages; caller owns doc disposal)`
       )
 
-      return { doc, title, pages }
+      return { doc, title, embeddingTitle, pages }
     } catch (error) {
       // `doc` is undefined when `openDocument` itself threw — nothing to free.
       // When it is defined, dispose before re-throwing (on BOTH the foreign and
@@ -463,6 +496,7 @@ export class DocumentParser {
       })
       return {
         content: body.content,
+        ...(body.sourceMap ? { sourceMap: body.sourceMap } : {}),
         title: titleResult.title,
         ...(body.atomicRanges.length === 0 ? {} : { atomicRanges: body.atomicRanges }),
         ...(imageAnchors.length === 0 ? {} : { imageAnchors }),
@@ -479,7 +513,7 @@ export class DocumentParser {
       const fileName = basename(filePath)
       const titleResult = extractTxtTitle(text, fileName)
       console.error(`Parsed TXT: ${filePath} (${text.length} characters)`)
-      return { content: text, title: titleResult.title }
+      return { content: text, title: titleResult.title, sourceMap: textSourceMap(text, false) }
     } catch (error) {
       throw new FileOperationError(`Failed to parse TXT: ${filePath}`, { cause: toError(error) })
     }
@@ -492,7 +526,7 @@ export class DocumentParser {
       const fileName = basename(filePath)
       const titleResult = extractMarkdownTitle(text, fileName)
       console.error(`Parsed MD: ${filePath} (${text.length} characters)`)
-      return { content: text, title: titleResult.title }
+      return { content: text, title: titleResult.title, sourceMap: textSourceMap(text, true) }
     } catch (error) {
       throw new FileOperationError(`Failed to parse MD: ${filePath}`, { cause: toError(error) })
     }

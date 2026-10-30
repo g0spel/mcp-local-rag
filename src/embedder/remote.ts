@@ -9,6 +9,7 @@
 // (TEI-native shape; the server owns model choice, dtype, and truncation).
 
 import { AppError } from '../utils/errors.js'
+import type { EmbeddingComputationIdentity } from './index.js'
 
 /** Remote embedding generation error. */
 export class RemoteEmbeddingError extends AppError {
@@ -161,6 +162,8 @@ export class RemoteEmbedder {
   private readonly config: RemoteEmbedderConfig
   private dims: number | null = null
   private maxInputTokens: number | null = null
+  private serverModelId: string | null = null
+  private serverModelSha: string | null = null
   private initialized: boolean = false
 
   constructor(config: RemoteEmbedderConfig) {
@@ -183,17 +186,29 @@ export class RemoteEmbedder {
       )
     }
     this.dims = vector.length
-    this.maxInputTokens = await this.probeMaxInputLength()
+    const server = await this.probeServerInfo()
+    this.maxInputTokens = server.maxInputTokens
+    this.serverModelId = server.modelId
+    this.serverModelSha = server.modelSha
     this.initialized = true
+    console.error(
+      `RemoteEmbedder: connected to "${this.config.serverUrl}" (dimension ${this.dims}, model ${server.modelId ?? 'unknown'}, max input ${this.maxInputTokens ?? 'unknown'} tokens)`
+    )
     console.error(
       `RemoteEmbedder: connected to "${this.config.serverUrl}" (dimension ${this.dims}, max input ${this.maxInputTokens ?? 'unknown'} tokens)`
     )
   }
 
-  /** Best-effort `GET /info` → `max_input_length`; failure keeps containment off. */
-  private async probeMaxInputLength(): Promise<number | null> {
+  /** Best-effort `GET /info`: input cap + serving-model identity for reuse. */
+  private async probeServerInfo(): Promise<{
+    maxInputTokens: number | null
+    modelId: string | null
+    modelSha: string | null
+  }> {
+    const none = { maxInputTokens: null, modelId: null, modelSha: null }
+    let info: unknown
     try {
-      const info: unknown = await withTimeout(async (signal) => {
+      info = await withTimeout(async (signal) => {
         const res = await fetch(`${this.config.serverUrl}/info`, {
           signal,
           headers: { Connection: 'close' },
@@ -203,13 +218,19 @@ export class RemoteEmbedder {
         }
         return await res.json()
       }, 10_000)
-      if (typeof info !== 'object' || info === null || !('max_input_length' in info)) {
-        return null
-      }
-      const cap: unknown = info.max_input_length
-      return typeof cap === 'number' && Number.isFinite(cap) && cap > 0 ? cap : null
     } catch {
-      return null
+      return none
+    }
+    if (typeof info !== 'object' || info === null) {
+      return none
+    }
+    const cap: unknown = 'max_input_length' in info ? info.max_input_length : undefined
+    const modelId: unknown = 'model_id' in info ? info.model_id : undefined
+    const modelSha: unknown = 'model_sha' in info ? info.model_sha : undefined
+    return {
+      maxInputTokens: typeof cap === 'number' && Number.isFinite(cap) && cap > 0 ? cap : null,
+      modelId: typeof modelId === 'string' && modelId.length > 0 ? modelId : null,
+      modelSha: typeof modelSha === 'string' && modelSha.length > 0 ? modelSha : null,
     }
   }
 
@@ -217,6 +238,8 @@ export class RemoteEmbedder {
     this.initialized = false
     this.dims = null
     this.maxInputTokens = null
+    this.serverModelId = null
+    this.serverModelSha = null
   }
 
   /** The server's own input cap when `/info` exposed it, else `null`. */
@@ -224,10 +247,33 @@ export class RemoteEmbedder {
     return this.maxInputTokens
   }
 
+  /** The remote stack has no local model-load warnings to surface. */
+  get modelWarnings(): readonly string[] {
+    return []
+  }
+
   /** Optional `EmbedderInterface` member: activates the chunker's containment. */
   async getTokenLimit(): Promise<number | null> {
     await this.initialize()
     return this.maxInputTokens
+  }
+
+  /**
+   * `PersistentEmbeddingProvider` member: the serving model's identity from
+   * `/info` (model id + sha + endpoint), so embedding snapshots taken against
+   * one server are never reused against another. `null` before initialize.
+   */
+  async getComputationIdentity(): Promise<EmbeddingComputationIdentity | null> {
+    await this.initialize()
+    if (this.dims === null) {
+      return null
+    }
+    const model = this.serverModelId ?? 'unknown'
+    const sha = this.serverModelSha ?? 'unpinned'
+    return {
+      fingerprint: `remote:${this.config.serverUrl}:${model}@${sha}`,
+      dimension: this.dims,
+    }
   }
 
   /**

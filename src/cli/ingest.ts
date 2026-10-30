@@ -1,9 +1,9 @@
 // CLI ingest subcommand — bulk file ingestion with single optimize() at end
 
 import { stat } from 'node:fs/promises'
-import { resolve, sep } from 'node:path'
 
 import { SemanticChunker } from '../chunker/index.js'
+import { DocumentEmbeddingSession } from '../embedder/embedding-snapshot.js'
 import type { Embedder } from '../embedder/index.js'
 import type { RemoteEmbedder } from '../embedder/remote.js'
 import {
@@ -13,10 +13,15 @@ import {
 } from '../ingest/file.js'
 import { DocumentParser } from '../parser/index.js'
 import type { BaseDirsConfig, BaseDirsConfigWarning } from '../utils/base-dirs.js'
-import { DEFAULT_MAX_FILE_SIZE, MAX_CHUNK_MIN_LENGTH } from '../utils/limits.js'
+import {
+  DEFAULT_MAX_FILE_SIZE,
+  MAX_CHUNK_MIN_LENGTH,
+  MAX_FILE_SIZE_LIMIT,
+} from '../utils/limits.js'
 import type { QualityProfile } from '../utils/visual-profile.js'
 import type { VectorStore } from '../vectordb/index.js'
 import {
+  buildCliScanExclusionOrExit,
   createEmbedder,
   createVectorStore,
   formatCliError,
@@ -115,6 +120,21 @@ function requireCountFlag(args: string[], flagIndex: number, flag: string): numb
     process.exit(1)
   }
   return Number.parseInt(raw, 10)
+}
+
+function readIntegerEnvOrExit(name: string, max: number): number | undefined {
+  const raw = process.env[name]
+  if (!raw) {
+    return undefined
+  }
+  const value = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+  if (!(value >= 1 && value <= max)) {
+    console.error(
+      `Invalid ${name} value: "${raw.slice(0, 100)}". Expected integer between 1 and ${max}.`
+    )
+    process.exit(1)
+  }
+  return value
 }
 
 /** Reject an unknown flag, or a second positional path. */
@@ -222,14 +242,10 @@ export async function resolveConfig(
 
   const maxFileSize =
     ingestOptions.maxFileSize ??
-    (process.env['MAX_FILE_SIZE']
-      ? Number.parseInt(process.env['MAX_FILE_SIZE'], 10)
-      : INGEST_DEFAULTS.maxFileSize)
+    readIntegerEnvOrExit('MAX_FILE_SIZE', MAX_FILE_SIZE_LIMIT) ??
+    INGEST_DEFAULTS.maxFileSize
   const chunkMinLength =
-    ingestOptions.chunkMinLength ??
-    (process.env['CHUNK_MIN_LENGTH']
-      ? Number.parseInt(process.env['CHUNK_MIN_LENGTH'], 10)
-      : undefined)
+    ingestOptions.chunkMinLength ?? readIntegerEnvOrExit('CHUNK_MIN_LENGTH', MAX_CHUNK_MIN_LENGTH)
 
   // Validate maxFileSize range
   const maxFileSizeError = validateMaxFileSize(maxFileSize)
@@ -267,6 +283,7 @@ export async function resolveConfig(
 
 /** Collaborators one CLI ingest run needs, injected as a unit. */
 export interface SingleFileIngestCollaborators {
+  dbPath: string
   parser: DocumentParser
   chunker: SemanticChunker
   embedder: Embedder | RemoteEmbedder
@@ -285,26 +302,37 @@ export async function ingestSingleFile(
   collaborators: SingleFileIngestCollaborators,
   options: PrepareFileForIngestOptions = { images: false }
 ): Promise<number> {
-  const { parser, chunker, embedder, vectorStore } = collaborators
+  const { dbPath, parser, chunker, embedder, vectorStore } = collaborators
   const isPdf = filePath.toLowerCase().endsWith('.pdf')
-  const prepared = await prepareFileForIngest(filePath, { parser, chunker, embedder }, options)
-  if (prepared.omittedImageCount > 0) {
-    console.error(
-      `  Warning: skipped ${prepared.omittedImageCount} undecodable or oversized ${isPdf ? 'PDF' : 'DOCX'} image(s)`
+  const session = new DocumentEmbeddingSession(dbPath, filePath, embedder)
+  try {
+    const prepared = await prepareFileForIngest(
+      filePath,
+      { parser, chunker, embedder: session },
+      options
     )
+    if (prepared.omittedImageCount > 0) {
+      console.error(
+        `  Warning: skipped ${prepared.omittedImageCount} undecodable or oversized ${isPdf ? 'PDF' : 'DOCX'} image(s)`
+      )
+    }
+    if (prepared.chunks.length === 0) {
+      console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
+      return 0
+    }
+
+    const vectorChunks = buildPreparedFileVectorChunks(prepared)
+
+    // Delete existing chunks for this file, then insert the new ones.
+    // Snapshot publication follows the successful per-file insertion.
+    await vectorStore.deleteChunks(filePath)
+    await vectorStore.insertChunks(vectorChunks)
+    await session.publish()
+
+    return vectorChunks.length
+  } finally {
+    session.dispose()
   }
-  if (prepared.chunks.length === 0) {
-    console.error(`  Warning: 0 chunks generated (file may be empty or too short)`)
-    return 0
-  }
-
-  const vectorChunks = buildPreparedFileVectorChunks(prepared)
-
-  // Delete existing chunks for this file, then insert the new ones
-  await vectorStore.deleteChunks(filePath)
-  await vectorStore.insertChunks(vectorChunks)
-
-  return vectorChunks.length
 }
 
 // ============================================
@@ -366,7 +394,11 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
   // Resolve config: CLI flags > env vars > defaults
   const globalConfig = resolveGlobalConfig(globalOptions)
   const config = await resolveConfig(globalConfig, options)
-  const excludePaths = [`${resolve(config.dbPath)}${sep}`, `${resolve(config.cacheDir)}${sep}`]
+  const exclusion = buildCliScanExclusionOrExit({
+    dbPath: config.dbPath,
+    cacheDir: config.cacheDir,
+    roots: config.baseDirs,
+  })
 
   // Surface resolver warnings (precedence, nested-root pruning) on stderr
   // before scan output starts.
@@ -376,7 +408,7 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
 
   // Directory mode scans only the positional directory; configured roots are
   // the containment boundary used by collectFiles and DocumentParser.
-  const files = await collectFiles(targetPath, config.baseDirs.baseDirs, excludePaths)
+  const files = await collectFiles(targetPath, config.baseDirs.baseDirs, exclusion)
   if (files.length === 0) {
     console.error('No supported files found.')
     process.exit(1)
@@ -409,7 +441,7 @@ export async function runIngest(args: string[], globalOptions: GlobalOptions = {
       try {
         const chunkCount = await ingestSingleFile(
           filePath,
-          { parser, chunker, embedder, vectorStore },
+          { dbPath: globalConfig.dbPath, parser, chunker, embedder, vectorStore },
           buildFileIngestOptions(
             {
               images: options.images === true,

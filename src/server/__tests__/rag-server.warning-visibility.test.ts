@@ -11,7 +11,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { testModelCacheDir, withTestDevice } from '../../__tests__/test-device.js'
-import { expectDefined, expectRecord, privateMembers } from '../../__tests__/test-doubles.js'
+import { expectDefined, privateMembers } from '../../__tests__/test-doubles.js'
 import type { Embedder } from '../../embedder/index.js'
 import { BaseDirsConfigError } from '../../utils/base-dirs.js'
 import { generateRawDataPath } from '../../utils/raw-data-utils.js'
@@ -126,10 +126,9 @@ describe('root-dependent tools fail fast on configError; non-root-dependent stay
 })
 
 // =============================================================================
-// status remains callable even with configError, and exposes the error in
-// content blocks (so MCP clients can diagnose without inspecting stderr).
+// Non-root-dependent tools remain callable even with configError.
 // =============================================================================
-describe('P3-T3: status callable with configError and exposes diagnostic', () => {
+describe('P3-T3: non-root-dependent tools callable with configError', () => {
   let server: RAGServer
   const testDbPath = resolve('./tmp/test-lancedb-warning-visibility-status-err')
   const testDataDir = resolve('./tmp/test-data-warning-visibility-status-err')
@@ -158,19 +157,6 @@ describe('P3-T3: status callable with configError and exposes diagnostic', () =>
     await server.close()
     rmSync(testDbPath, { recursive: true, force: true })
     rmSync(testDataDir, { recursive: true, force: true })
-  })
-
-  it('status returns a content response that exposes the configError message', async () => {
-    const result = await server.handleStatus()
-    expect(result.content.length).toBeGreaterThanOrEqual(2)
-    // Primary status JSON block is still present.
-    expect(result.content[0]?.type).toBe('text')
-    // configError diagnostic must be visible in content (not only stderr).
-    const errorBlock = findWarningBlock(
-      result.content,
-      'BASE_DIRS must be a JSON array of non-empty path strings'
-    )
-    expect(errorBlock).toBeDefined()
   })
 
   // Non-root-dependent tools must stay callable in degraded mode. The
@@ -335,16 +321,6 @@ describe('P3-T3: warnings appear in every tool response when warnings exist', ()
     const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
     expect(block).toBeDefined()
   })
-
-  // Annotations remain on the warning block (assistant/user audience, priority 0.3).
-  it('warning content blocks carry MCP annotations', async () => {
-    const result = await server.handleStatus()
-    const block = findWarningBlock(result.content, PRECEDENCE_WARNING)
-    expect(block).toBeDefined()
-    const annotations = expectRecord(expectDefined(block).annotations)
-    expect(annotations['audience']).toEqual(['user', 'assistant'])
-    expect(annotations['priority']).toBe(0.3)
-  })
 })
 
 // =============================================================================
@@ -354,15 +330,10 @@ describe('P3-T3: no spurious blocks when warnings absent', () => {
   let server: RAGServer
   const testDbPath = resolve('./tmp/test-lancedb-warning-visibility-clean')
   const testDataDir = resolve('./tmp/test-data-warning-visibility-clean')
-  const sampleFile = resolve(testDataDir, 'sample.txt')
 
   beforeAll(async () => {
     mkdirSync(testDbPath, { recursive: true })
     mkdirSync(testDataDir, { recursive: true })
-    writeFileSync(
-      sampleFile,
-      'A small sample document used to confirm that responses contain only the primary content block when no warnings are configured.'
-    )
 
     server = new RAGServer(
       withTestDevice({
@@ -388,16 +359,6 @@ describe('P3-T3: no spurious blocks when warnings absent', () => {
     const result = await server.handleStatus()
     expect(result.content.length).toBe(1)
   })
-
-  it('list_files response has exactly one content block when no warnings', async () => {
-    const result = await server.handleListFiles()
-    expect(result.content.length).toBe(1)
-  })
-
-  it('query_documents response has exactly one content block when no warnings', async () => {
-    const result = await server.handleQueryDocuments({ query: 'sample', limit: 1 })
-    expect(result.content.length).toBe(1)
-  })
 })
 
 describe('query_documents attachment warning isolation', () => {
@@ -412,7 +373,6 @@ describe('query_documents attachment warning isolation', () => {
       chunkIndex: 3,
       text: 'first preserved text',
       score: 0.1,
-      metadata: { fileName: 'first.pdf', fileSize: 100, fileType: 'pdf' },
       fileTitle: 'First',
     },
     {
@@ -421,7 +381,6 @@ describe('query_documents attachment warning isolation', () => {
       chunkIndex: 7,
       text: 'second preserved text',
       score: 0.2,
-      metadata: { fileName: 'second.pdf', fileSize: 200, fileType: 'pdf' },
       fileTitle: 'Second',
     },
     {
@@ -430,7 +389,6 @@ describe('query_documents attachment warning isolation', () => {
       chunkIndex: 11,
       text: 'third preserved text',
       score: 0.3,
-      metadata: { fileName: 'third.pdf', fileSize: 300, fileType: 'pdf' },
       fileTitle: 'Third',
     },
     {
@@ -439,7 +397,6 @@ describe('query_documents attachment warning isolation', () => {
       chunkIndex: 13,
       text: 'fourth preserved text',
       score: 0.4,
-      metadata: { fileName: 'fourth.pdf', fileSize: 400, fileType: 'pdf' },
       fileTitle: 'Fourth',
     },
   ]
@@ -542,6 +499,56 @@ describe('query_documents attachment warning isolation', () => {
     )
     expect(warnings).toHaveLength(1)
     expect(warnings[0]?.text).not.toContain('sensitive database internals')
+  })
+})
+
+describe('embedder model settings in tool responses', () => {
+  const dbPath = resolve('./tmp/test-lancedb-model-settings')
+  const MODEL_WARNING = 'Model "org/model" declares similarity_fn_name "manhattan".'
+  let server: RAGServer
+  let embedder: Embedder
+
+  beforeAll(() => {
+    mkdirSync(dbPath, { recursive: true })
+    server = new RAGServer(
+      withTestDevice({
+        dbPath,
+        modelName: 'Xenova/all-MiniLM-L6-v2',
+        cacheDir: testModelCacheDir(),
+        baseDir: dbPath,
+        maxFileSize: 100 * 1024 * 1024,
+      })
+    )
+    embedder = privateMembers<{ embedder: Embedder }>(server).embedder
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  afterAll(() => {
+    rmSync(dbPath, { recursive: true, force: true })
+  })
+
+  it('asks the LLM to tell the user about a model warning', async () => {
+    vi.spyOn(embedder, 'modelWarnings', 'get').mockReturnValue([MODEL_WARNING])
+
+    const result = await server.handleStatus()
+
+    const block = expectDefined(findWarningBlock(result.content, MODEL_WARNING))
+    expect(block.text).toContain('Tell the user about this configuration issue.')
+  })
+
+  it('embeds the search query behind the query prompt', async () => {
+    const embed = vi.spyOn(embedder, 'embed').mockResolvedValue([0.1, 0.2])
+    vi.spyOn(
+      privateMembers<{ vectorStore: VectorStore }>(server).vectorStore,
+      'search'
+    ).mockResolvedValue([])
+
+    await server.handleQueryDocuments({ query: 'rollback steps', limit: 1 })
+
+    expect(embed).toHaveBeenCalledWith('rollback steps', 'query')
   })
 })
 

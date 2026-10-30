@@ -66,6 +66,57 @@ describe('STORE_IMAGES configuration', () => {
   })
 })
 
+describe('EMBED_TITLE_PREFIX configuration', () => {
+  it('threads the parsed value and warning through resolveServerConfig', async () => {
+    const cwd = resolve('./tmp/test-lancedb-config-shape')
+    const unset = await resolveServerConfig({ BASE_DIR: cwd }, cwd)
+    expect(unset.titlePrefix).toBe(false)
+
+    const enabled = await resolveServerConfig({ BASE_DIR: cwd, EMBED_TITLE_PREFIX: '1' }, cwd)
+    expect(enabled.titlePrefix).toBe(true)
+
+    const invalid = await resolveServerConfig({ BASE_DIR: cwd, EMBED_TITLE_PREFIX: 'maybe' }, cwd)
+    expect(invalid.titlePrefix).toBe(false)
+    expect(invalid.configWarnings).toContain(
+      'Invalid EMBED_TITLE_PREFIX value: "maybe". Expected one of 1, true, yes, on, 0, false, no, or off. Using false.'
+    )
+  })
+})
+
+describe('EMBED_HEADING_PREFIX configuration', () => {
+  it('threads the independent value and invalid-value warning', async () => {
+    const cwd = resolve('./tmp/test-lancedb-config-shape')
+    expect((await resolveServerConfig({ BASE_DIR: cwd }, cwd)).headingPrefix).toBe(false)
+    const enabled = await resolveServerConfig({ BASE_DIR: cwd, EMBED_HEADING_PREFIX: 'on' }, cwd)
+    expect(enabled.headingPrefix).toBe(true)
+    expect(enabled.titlePrefix).toBe(false)
+    const invalid = await resolveServerConfig({ BASE_DIR: cwd, EMBED_HEADING_PREFIX: 'maybe' }, cwd)
+    expect(invalid.headingPrefix).toBe(false)
+    expect(invalid.configWarnings).toContain(
+      'Invalid EMBED_HEADING_PREFIX value: "maybe". Expected one of 1, true, yes, on, 0, false, no, or off. Using false.'
+    )
+  })
+})
+
+describe('IGNORE_PATHS configuration', () => {
+  const cwd = resolve('./tmp/test-lancedb-config-shape')
+
+  it('threads the parsed patterns, and no patterns when unset', async () => {
+    expect((await resolveServerConfig({ BASE_DIR: cwd }, cwd)).ignorePatterns).toEqual([])
+    const configured = await resolveServerConfig(
+      { BASE_DIR: cwd, IGNORE_PATHS: '["plugs/**","**/*.draft.md"]' },
+      cwd
+    )
+    expect(configured.ignorePatterns).toEqual(['plugs/**', '**/*.draft.md'])
+  })
+
+  it('refuses to start on a value that is not a JSON array', async () => {
+    await expect(
+      resolveServerConfig({ BASE_DIR: cwd, IGNORE_PATHS: 'plugs/**:drafts/**' }, cwd)
+    ).rejects.toThrow(/^IGNORE_PATHS must be a JSON array/)
+  })
+})
+
 describe('RAGServerConfig degraded-mode construction guards (P3-T1)', () => {
   const testDbPath = resolve('./tmp/test-lancedb-config-shape')
 

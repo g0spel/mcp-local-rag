@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type { FSWatcher } from 'node:fs'
 import { readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { resolve, sep } from 'node:path'
+import { resolve } from 'node:path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
@@ -17,7 +17,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { startAutoSyncWatch } from '../auto-sync-watch.js'
 import { DEFAULT_MIN_CHUNK_LENGTH, SemanticChunker } from '../chunker/index.js'
+import type { EmbedderInterface } from '../chunker/semantic-chunker.js'
 import { collectFiles } from '../cli/file-collection.js'
+import {
+  DocumentEmbeddingSession,
+  removeEmbeddingSnapshot,
+} from '../embedder/embedding-snapshot.js'
 import { Embedder } from '../embedder/index.js'
 import { RemoteEmbedder } from '../embedder/remote.js'
 import { listDocuments } from '../features/list.js'
@@ -40,6 +45,7 @@ import {
 } from '../ingest/file.js'
 import { parseHtml } from '../parser/html-parser.js'
 import { DocumentParser, ValidationError } from '../parser/index.js'
+import { textSourceMap } from '../parser/text-source-map.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import { type RerankResult, rerankCandidates } from '../rerank/index.js'
 import { type BaseDirsConfigError, displayPath } from '../utils/base-dirs.js'
@@ -65,8 +71,10 @@ import {
 } from '../utils/raw-data-utils.js'
 import {
   bfsCollectSupportedFiles,
+  buildScanExclusion,
   canonicalizeRequestedPath,
   classifyRequestedPath,
+  type ScanExclusion,
 } from '../utils/scan.js'
 import { nonAbsolutePrefixes } from '../utils/scope-match.js'
 import { isRecord } from '../utils/type-guards.js'
@@ -254,8 +262,7 @@ export class RAGServer {
   /** Legacy single-root accessor for `rawBaseDirs`. Derived from `rawBaseDirs[0]`. */
   private readonly rawBaseDir: string
   private readonly cacheDir: string
-  // Used by handleListFiles filter to exclude system-managed directories
-  private readonly excludePaths: string[]
+  private readonly scanExclusion: ScanExclusion
   private readonly configWarnings: string[]
   /**
    * When non-null the server is in degraded mode: `status` stays callable so the
@@ -308,7 +315,12 @@ export class RAGServer {
     this.storeImages = config.storeImages ?? false
     this.rerankCommand = config.rerankCommand
     this.rerankTimeoutMs = config.rerankTimeoutMs ?? DEFAULT_RERANK_TIMEOUT_MS
-    this.excludePaths = [`${resolve(this.dbPath)}${sep}`, `${resolve(this.cacheDir)}${sep}`]
+    this.scanExclusion = buildScanExclusion({
+      dbPath: this.dbPath,
+      cacheDir: this.cacheDir,
+      roots: { baseDirs: this.baseDirs, rawBaseDirs },
+      ignorePatterns: config.ignorePatterns,
+    })
     this.server = new Server(
       { name: 'rag-mcp-server', version: packageVersion },
       { capabilities: { tools: {} } }
@@ -344,11 +356,7 @@ export class RAGServer {
     if (config.dtype !== undefined) {
       embedderConfig.dtype = config.dtype
     }
-    const embedder =
-      config.embeddingServerUrl !== undefined
-        ? new RemoteEmbedder({ serverUrl: config.embeddingServerUrl, batchSize: 16 })
-        : new Embedder(embedderConfig)
-    this.embedder = embedder
+    this.embedder = this.buildEmbedder(config, embedderConfig)
     this.chunker = new SemanticChunker(
       config.chunkMinLength !== undefined ? { minChunkLength: config.chunkMinLength } : {}
     )
@@ -378,9 +386,23 @@ export class RAGServer {
     }
   }
 
+  /** Finish the embedder config (title/heading prefixes) and pick local vs remote. */
+  private buildEmbedder(
+    config: RAGServerConfig,
+    embedderConfig: ConstructorParameters<typeof Embedder>[0]
+  ): Embedder | RemoteEmbedder {
+    if (config.titlePrefix) {
+      embedderConfig.titlePrefix = true
+    }
+    embedderConfig.headingPrefix = config.headingPrefix === true
+    return config.embeddingServerUrl !== undefined
+      ? new RemoteEmbedder({ serverUrl: config.embeddingServerUrl, batchSize: 16 })
+      : new Embedder(embedderConfig)
+  }
+
   /** Every handler funnels through here, so the warning shape lives in one place. */
   private withWarnings<T extends RagContentBlock[]>(content: T): T {
-    return appendConfigWarnings(content, this.configWarnings)
+    return appendConfigWarnings(content, [...this.configWarnings, ...this.embedder.modelWarnings])
   }
 
   /**
@@ -523,7 +545,7 @@ export class RAGServer {
     this.maybeAutoSync()
     // query_documents reads only LanceDB, so it stays callable in degraded
     // mode; `withWarnings` and `status` remain the diagnostic surface.
-    const queryVector = await this.embedder.embed(args.query)
+    const queryVector = await this.embedder.embed(args.query, 'query')
 
     // A reranker only improves on what the search returned, so it is given more
     // candidates than the caller asked for. `search` applies every filter and
@@ -563,6 +585,7 @@ export class RAGServer {
         text: candidate.text,
         score: candidate.score,
         fileTitle: candidate.fileTitle ?? null,
+        ...(candidate.sourceContext ? { sourceContext: candidate.sourceContext } : {}),
         images: attachmentsById.get(candidate.id) ?? [],
       }
 
@@ -652,14 +675,20 @@ export class RAGServer {
   }
 
   /** What one ingest source contributed, before rows are built and stored. */
-  private async prepareRawDataIngest(filePath: string): Promise<PreparedIngestSource> {
+  private async prepareRawDataIngest(
+    filePath: string,
+    embedder: EmbedderInterface
+  ): Promise<PreparedIngestSource> {
     // Raw-data files: skip parser validation, read directly.
     const sourceBytes = await readFile(filePath)
     const text = sourceBytes.toString('utf-8')
     const meta = await loadMetaJson(filePath)
     const title = meta?.title ?? null
     console.error(`Read raw-data file: ${filePath} (${text.length} characters)`)
-    const { chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, this.embedder)
+    const { chunks, embeddings } = await buildChunksAndEmbeddings(text, this.chunker, embedder, {
+      title,
+      sourceMap: textSourceMap(text, true),
+    })
     return {
       title,
       omittedImageCount: 0,
@@ -667,7 +696,6 @@ export class RAGServer {
         filePath,
         chunks,
         embeddings,
-        fileSize: text.length,
         fileTitle: title,
         contentHash: computeContentHash(sourceBytes),
       }),
@@ -676,7 +704,8 @@ export class RAGServer {
 
   private async prepareSourceFileIngest(
     filePath: string,
-    options: Parameters<typeof prepareFileForIngest>[2]
+    options: Parameters<typeof prepareFileForIngest>[2],
+    embedder: EmbedderInterface
   ): Promise<PreparedIngestSource> {
     // The MCP boundary accepts an arbitrary client path, unlike CLI ingestion
     // paths that have already passed a regular-file collector. Reject a FIFO
@@ -688,7 +717,7 @@ export class RAGServer {
     }
     const preparedFile = await prepareFileForIngest(
       filePath,
-      { parser: this.parser, chunker: this.chunker, embedder: this.embedder },
+      { parser: this.parser, chunker: this.chunker, embedder },
       options
     )
     return {
@@ -725,6 +754,33 @@ export class RAGServer {
     }
   }
 
+  private async prepareIngestSource(
+    args: IngestFileInput,
+    options: { images?: boolean },
+    isRawData: boolean,
+    session: DocumentEmbeddingSession
+  ): Promise<PreparedIngestSource> {
+    if (isRawData) {
+      return await this.prepareRawDataIngest(args.filePath, session)
+    }
+    return await this.prepareSourceFileIngest(
+      args.filePath,
+      {
+        images: supportsEmbeddedImages(args.filePath) && (options.images ?? this.storeImages),
+        ...(args.visual === true
+          ? {
+              captioner: {
+                profile: args.visualQuality ?? 'fast',
+                cacheDir: this.cacheDir,
+                device: this.device,
+              },
+            }
+          : {}),
+      },
+      session
+    )
+  }
+
   private async ingestFile(
     args: IngestFileInput,
     options: { images?: boolean } = {}
@@ -738,80 +794,76 @@ export class RAGServer {
     // `args.filePath` is the DB key (backup/delete/insert/result), stored
     // verbatim so lookups match (realpath stays in validateFilePath; see
     // BaseDirsConfig for the path policy).
-    const visualArg = args.visual
-    const visualQuality = args.visualQuality ?? 'fast'
+    const session = new DocumentEmbeddingSession(this.dbPath, args.filePath, this.embedder)
 
     // No outer error-mapping catch: failures reach the central dispatcher
     // mapper with their original identity. The inner insert/rollback catch is
     // local-effect only.
-    const prepared = isRawData
-      ? await this.prepareRawDataIngest(args.filePath)
-      : await this.prepareSourceFileIngest(args.filePath, {
-          images: supportsEmbeddedImages(args.filePath) && (options.images ?? this.storeImages),
-          ...(visualArg === true
-            ? {
-                captioner: { profile: visualQuality, cacheDir: this.cacheDir, device: this.device },
-              }
-            : {}),
-        })
-    const title = prepared.title
-    let vectorChunks = prepared.vectorChunks
-    const preparedFile = prepared.preparedFile
-
-    if (prepared.omittedImageCount > 0) {
-      console.warn(
-        `Skipped ${prepared.omittedImageCount} undecodable or oversized image(s) in ${args.filePath}`
-      )
-    }
-
-    // Fail-fast: Prevent data loss when chunking produces 0 chunks
-    // This check must happen BEFORE delete to preserve existing data on re-ingest
-    const chunkCount = vectorChunks?.length ?? preparedFile?.chunks.length ?? 0
-    if (chunkCount === 0) {
-      throw new NoChunksError(
-        ErrorCode.InvalidParams,
-        `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.minChunkLength} characters required). Existing data has been preserved.`
-      )
-    }
-
-    // Back up existing chunks BEFORE the destructive delete, with their real
-    // stored vectors, so a failed re-ingest rolls back without corrupting them.
-    // A failed read propagates from here, leaving the existing data untouched,
-    // rather than proceeding into the delete with a partial backup.
-    const backup = await this.vectorStore.getChunksByFilePath(args.filePath)
-    if (backup.length > 0) {
-      console.error(`Backup created: ${backup.length} chunks for ${args.filePath}`)
-    }
-
-    // Preserve the original server ordering: row construction follows the
-    // backup read but still completes before the destructive delete.
-    if (preparedFile !== undefined) {
-      vectorChunks = buildPreparedFileVectorChunks(preparedFile)
-    }
-    if (vectorChunks === undefined) {
-      throw new DatabaseError(`No chunks were prepared for ingest: ${args.filePath}`)
-    }
-    const chunksToInsert = vectorChunks
-
-    // Delete existing data
-    await this.vectorStore.deleteChunks(args.filePath)
-    console.error(`Deleted existing chunks for: ${args.filePath}`)
-
-    // Insert vectors (transaction processing)
     try {
-      await this.vectorStore.insertChunks(chunksToInsert)
-      console.error(`Inserted ${chunksToInsert.length} chunks for: ${args.filePath}`)
-    } catch (insertError) {
-      console.error('Ingestion failed, rolling back...', insertError)
-      await this.rollbackIngest(args.filePath, backup, insertError)
-      throw insertError
-    }
+      const prepared = await this.prepareIngestSource(args, options, isRawData, session)
+      const title = prepared.title
+      let vectorChunks = prepared.vectorChunks
+      const preparedFile = prepared.preparedFile
 
-    return {
-      filePath: args.filePath,
-      chunkCount,
-      timestamp: new Date().toISOString(),
-      fileTitle: title || null,
+      if (prepared.omittedImageCount > 0) {
+        console.warn(
+          `Skipped ${prepared.omittedImageCount} undecodable or oversized image(s) in ${args.filePath}`
+        )
+      }
+
+      // Fail-fast: Prevent data loss when chunking produces 0 chunks
+      // This check must happen BEFORE delete to preserve existing data on re-ingest
+      const chunkCount = vectorChunks?.length ?? preparedFile?.chunks.length ?? 0
+      if (chunkCount === 0) {
+        throw new NoChunksError(
+          ErrorCode.InvalidParams,
+          `No chunks generated from file: ${args.filePath}. The file may be empty or all content was filtered (minimum ${this.minChunkLength} characters required). Existing data has been preserved.`
+        )
+      }
+
+      // Back up existing chunks BEFORE the destructive delete, with their real
+      // stored vectors, so a failed re-ingest rolls back without corrupting them.
+      // A failed read propagates from here, leaving the existing data untouched,
+      // rather than proceeding into the delete with a partial backup.
+      const backup = await this.vectorStore.getChunksByFilePath(args.filePath)
+      if (backup.length > 0) {
+        console.error(`Backup created: ${backup.length} chunks for ${args.filePath}`)
+      }
+
+      // Preserve the original server ordering: row construction follows the
+      // backup read but still completes before the destructive delete.
+      if (preparedFile !== undefined) {
+        vectorChunks = buildPreparedFileVectorChunks(preparedFile)
+      }
+      if (vectorChunks === undefined) {
+        throw new DatabaseError(`No chunks were prepared for ingest: ${args.filePath}`)
+      }
+      const chunksToInsert = vectorChunks
+
+      // Delete existing data
+      await this.vectorStore.deleteChunks(args.filePath)
+      console.error(`Deleted existing chunks for: ${args.filePath}`)
+
+      // Insert vectors (transaction processing)
+      try {
+        await this.vectorStore.insertChunks(chunksToInsert)
+        console.error(`Inserted ${chunksToInsert.length} chunks for: ${args.filePath}`)
+      } catch (insertError) {
+        console.error('Ingestion failed, rolling back...', insertError)
+        await this.rollbackIngest(args.filePath, backup, insertError)
+        throw insertError
+      }
+
+      await session.publish()
+
+      return {
+        filePath: args.filePath,
+        chunkCount,
+        timestamp: new Date().toISOString(),
+        fileTitle: title || null,
+      }
+    } finally {
+      session.dispose()
     }
   }
 
@@ -941,7 +993,7 @@ export class RAGServer {
       dbPath: this.dbPath,
       ingested,
       scope,
-      scan: (baseDir, scanScope) => scanBaseDir(baseDir, this.excludePaths, scanScope),
+      scan: (baseDir, scanScope) => scanBaseDir(baseDir, this.scanExclusion, scanScope),
     })
     const files: FileEntry[] = listed.files
     const sources: SourceEntry[] = listed.sources
@@ -1022,6 +1074,7 @@ export class RAGServer {
 
     // Delete chunks from vector database
     const removedChunks = await this.vectorStore.deleteChunks(targetPath)
+    await removeEmbeddingSnapshot(this.dbPath, targetPath)
     // Optimize immediately after the DB delete: a later raw-data unlink failure
     // must not skip compaction once the rows are already gone.
     await this.vectorStore.optimize()
@@ -1106,6 +1159,7 @@ export class RAGServer {
         text: row.text,
         isTarget: row.chunkIndex === args.chunkIndex,
         fileTitle: row.fileTitle ?? null,
+        ...(row.sourceContext ? { sourceContext: row.sourceContext } : {}),
       }
       if (sourceForAll) {
         item.source = sourceForAll
@@ -1158,7 +1212,7 @@ export class RAGServer {
   private async computeDocsFingerprint(): Promise<string | null> {
     const parts: string[] = []
     for (const dir of this.baseDirs) {
-      const files = await collectFiles(dir, this.baseDirs, [])
+      const files = await collectFiles(dir, this.baseDirs, { prefixes: [] })
       for (const f of files.sort()) {
         const st = await stat(f)
         parts.push(`${f}:${st.size}:${Math.floor(st.mtimeMs)}`)
@@ -1307,12 +1361,12 @@ export class RAGServer {
       // A path whose read would never return (a FIFO) is refused here too, which
       // matters more on this surface than on the CLI: the mutation guard is
       // released by this job's promise settling, and nothing else would.
-      classifyPath: async (path: string) => await classifyRequestedPath(path, this.excludePaths),
+      classifyPath: async (path: string) => await classifyRequestedPath(path, this.scanExclusion),
       // No `scope` argument, on purpose: a scope-pruned directory appears in
       // none of the coverage arrays, which would hide an unobserved region and
       // make prune unsafe.
       scanDir: async (rootPath: string) =>
-        await bfsCollectSupportedFiles(rootPath, this.excludePaths, { maxDepth: MAX_SCAN_DEPTH }),
+        await bfsCollectSupportedFiles(rootPath, this.scanExclusion, { maxDepth: MAX_SCAN_DEPTH }),
       // Size first, bytes second: `maxFileSize` is otherwise enforced inside the
       // parser, which runs long after the whole file would already be in memory
       // here. Declining (`null`) keeps the rest of the run usable instead of
@@ -1344,7 +1398,11 @@ export class RAGServer {
         this.updateSyncJob(jobId, { completed: ingestedFiles })
         return chunkCount
       },
-      deleteExactPath: async (filePath: string) => await this.vectorStore.deleteChunks(filePath),
+      deleteExactPath: async (filePath: string) => {
+        const removedChunks = await this.vectorStore.deleteChunks(filePath)
+        await removeEmbeddingSnapshot(this.dbPath, filePath)
+        return removedChunks
+      },
       optimize: async () => {
         await this.vectorStore.optimize()
       },
@@ -1356,7 +1414,7 @@ export class RAGServer {
       // decides requested-path containment in (the parser's boundary domain).
       canonicalRoots: this.baseDirs,
       dbPath: this.dbPath,
-      excludePaths: this.excludePaths,
+      excludePaths: this.scanExclusion.prefixes,
       platform: process.platform,
       // resolve() (never realpath) so the requested path is spelled like the
       // stored DB keys; the core validates it against the configured roots.

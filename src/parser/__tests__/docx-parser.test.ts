@@ -287,6 +287,7 @@ describe('DOCX parser', () => {
 
     expect(convertDocxHtmlToText(html)).toEqual({
       content: expectedContent,
+      sourceMap: { headings: [{ offset: 0, level: 1, text: 'Title & More' }] },
       atomicRanges: [{ start: rowStart, end: rowStart + 'H: V'.length }],
     })
   })

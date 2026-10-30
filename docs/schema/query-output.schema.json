@@ -4,11 +4,20 @@
   "title": "mcp-local-rag query output",
   "description": "Stdout payload of `mcp-local-rag query`. Results are ordered best-first, so the array order is the ranking. Consumers must preserve properties they do not recognize: new optional properties may be added without a major version bump.",
   "type": "array",
-  "items": { "$ref": "#/$defs/queryResult" },
+  "items": {
+    "$ref": "#/$defs/queryResult"
+  },
   "$defs": {
     "queryResult": {
       "type": "object",
-      "required": ["filePath", "chunkIndex", "text", "score", "fileTitle", "images"],
+      "required": [
+        "filePath",
+        "chunkIndex",
+        "text",
+        "score",
+        "fileTitle",
+        "images"
+      ],
       "properties": {
         "filePath": {
           "type": "string",
@@ -28,23 +37,35 @@
           "description": "Relevance distance, so a lower value is a better match. Magnitudes are comparable only within a single response."
         },
         "fileTitle": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Title of the source document when one could be derived, otherwise null."
         },
         "images": {
           "type": "array",
           "description": "Visual attachments stored with the chunk, in visual order. Empty unless the document was ingested with image storage enabled. Attachments that failed validation are omitted and reported on stderr, so this array may be shorter than what was stored.",
-          "items": { "$ref": "#/$defs/visualAttachment" }
+          "items": {
+            "$ref": "#/$defs/visualAttachment"
+          }
         },
         "source": {
           "type": "string",
           "description": "Original source identifier of content ingested through `ingest_data`, for example the URL an HTML page was fetched from. Present only for chunks whose `filePath` points into the managed raw-data area."
+        },
+        "sourceContext": {
+          "$ref": "#/$defs/sourceContext"
         }
       }
     },
     "visualAttachment": {
       "type": "object",
-      "required": ["imageIndex", "mimeType", "data"],
+      "required": [
+        "imageIndex",
+        "mimeType",
+        "data"
+      ],
       "properties": {
         "imageIndex": {
           "type": "integer",
@@ -53,13 +74,55 @@
         },
         "mimeType": {
           "type": "string",
-          "enum": ["image/png", "image/jpeg"],
+          "enum": [
+            "image/png",
+            "image/jpeg"
+          ],
           "description": "Media type of `data`."
         },
         "data": {
           "type": "string",
           "contentEncoding": "base64",
           "description": "Base64-encoded image bytes. Bounded per attachment, so a large source image may have been omitted rather than truncated."
+        }
+      }
+    },
+    "sourceContext": {
+      "type": "object",
+      "description": "Context at ingestion time. Optional on legacy or unsupported sources. Heading paths are ordered sections intersecting the chunk; multiple paths mean the chunk crosses sections. PDF headings are best-effort, inferred from outlines and typography.",
+      "required": [
+        "headingPaths"
+      ],
+      "properties": {
+        "headingPaths": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "One-based inclusive start line in the original MD/TXT file."
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "One-based inclusive end line in the original MD/TXT file."
+        },
+        "startPage": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "One-based physical PDF start page, not the printed label."
+        },
+        "endPage": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "One-based physical PDF end page, inclusive."
         }
       }
     }

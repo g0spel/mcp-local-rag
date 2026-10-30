@@ -14,7 +14,7 @@ export const toolDefinitions: Tool[] = [
   {
     name: 'query_documents',
     description:
-      'Search ingested documents with hybrid keyword + semantic matching. Use the returned order as the ranking; score may disagree with it. Each has filePath, chunkIndex, text, fileTitle, score (lower is closer), and source (for ingest_data items).',
+      'Search ingested documents with hybrid keyword + semantic matching. Use the returned order as the ranking; score may disagree with it. Each has filePath, chunkIndex, text, fileTitle, score (lower is closer), and source (for ingest_data items). Optional sourceContext provides heading paths and original line or physical PDF page ranges; multiple heading paths mean the chunk crosses sections.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -140,7 +140,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'read_chunk_neighbors',
-    description: `Read the chunks immediately before and after a query_documents result, in the same document, for more surrounding context. Pass chunkIndex from the result plus exactly one of filePath (ingest_file) or source (ingest_data). Returns the target chunk (isTarget: true) and its neighbors, ascending by chunkIndex; an out-of-range chunkIndex returns []. Defaults: before=2, after=2 (max ${MAX_NEIGHBOR_COUNT} each).`,
+    description: `Read the chunks immediately before and after a query_documents result, in the same document, for more surrounding context. Pass chunkIndex from the result plus exactly one of filePath (ingest_file) or source (ingest_data). Returns the target chunk (isTarget: true) and its neighbors, ascending by chunkIndex; an out-of-range chunkIndex returns []. Optional sourceContext provides heading paths and original line or physical PDF page ranges; multiple heading paths mean the chunk crosses sections. Defaults: before=2, after=2 (max ${MAX_NEIGHBOR_COUNT} each).`,
     inputSchema: {
       type: 'object',
       properties: {

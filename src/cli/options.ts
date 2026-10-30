@@ -162,6 +162,7 @@ Commands:
   list                   List files and ingestion status
   status                 Show database status
   delete <path>          Delete ingested content
+  relocate               Update indexed paths after moving a project
   skills install         Install Claude Code / Codex skills`
 
 // ============================================
@@ -279,6 +280,30 @@ export function parseMaxFiles(value: string | undefined): ParseResult<number> {
     return { value: undefined, warning }
   }
   return { value: parsed }
+}
+
+/**
+ * Parse an on/off environment variable. Unset or empty is off; an
+ * unrecognized value is off with a warning naming `name`.
+ */
+export function parseBooleanEnv(
+  name: string,
+  value: string | undefined
+): { value: boolean; warning?: string } {
+  const normalized = value?.trim().toLowerCase() ?? ''
+  if (normalized.length === 0) {
+    return { value: false }
+  }
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return { value: true }
+  }
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return { value: false }
+  }
+  return {
+    value: false,
+    warning: `Invalid ${name} value: "${value?.slice(0, 100)}". Expected one of 1, true, yes, on, 0, false, no, or off. Using false.`,
+  }
 }
 
 /** Parse `RAG_HYBRID_WEIGHT`. */

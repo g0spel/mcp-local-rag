@@ -9,13 +9,14 @@
 //     visual-candidate detector.
 
 import type { Document as MupdfDocument, Page as MupdfPage } from 'mupdf'
-
+import type { HeadingAnchor } from '../utils/source-context.js'
 import {
   type EmbedderInterface,
   type FilteredTextFragment,
   filterPageBoundaryLayouts,
   type PageData,
 } from './pdf-filter.js'
+import { pdfHeadings } from './pdf-headings.js'
 
 interface StextBbox {
   x: number
@@ -45,6 +46,7 @@ interface StextJson {
  * kept for the downstream visual detector.
  */
 interface ExtractedPage {
+  headings: HeadingAnchor[]
   pageNum: number
   text: string
   textFragments: FilteredTextFragment[]
@@ -170,10 +172,12 @@ export async function extractPdfPages(
   // Apply sentence-level header/footer filtering while retaining each survivor's layout data.
   const filteredPages = await filterPageBoundaryLayouts(pageDataList, embedder)
 
+  const headings = pdfHeadings(doc, pageDataList, filteredPages)
   const page1FontHint = largestFontTitleHint(pageDataList[0]?.items ?? [])
 
   const pages: ExtractedPage[] = pageDataList.map((p, idx) => ({
     pageNum: p.pageNum,
+    headings: headings[idx] ?? [],
     text: filteredPages[idx]?.text ?? '',
     textFragments: filteredPages[idx]?.textFragments ?? [],
     stextJson: stextJsonList[idx] ?? { blocks: [] },

@@ -7,13 +7,7 @@ import type { TextChunk } from '../../chunker/index.js'
 import { ingestSingleFile, type SingleFileIngestCollaborators } from '../../cli/ingest.js'
 import { buildVectorChunks, computeContentHash } from '../../ingest/compute.js'
 import { type VectorChunk, VectorStore } from '../index.js'
-import {
-  type ChunkRow,
-  DatabaseError,
-  isLanceDBRawResult,
-  type SearchResult,
-  toSearchResult,
-} from '../types.js'
+import { type ChunkRow, DatabaseError, type SearchResult, toSearchResult } from '../types.js'
 
 describe('VectorStore', () => {
   const testDbPath = './tmp/test-vectordb'
@@ -47,11 +41,6 @@ describe('VectorStore', () => {
       chunkIndex,
       text,
       vector: vector || new Array(384).fill(0).map(() => Math.random()),
-      metadata: {
-        fileName: path.basename(filePath),
-        fileSize: text.length,
-        fileType: path.extname(filePath).slice(1),
-      },
       fileTitle: null,
       timestamp: new Date().toISOString(),
     }
@@ -64,6 +53,16 @@ describe('VectorStore', () => {
     const vector = new Array(384).fill(0).map((_, i) => Math.sin(seed + i))
     const norm = Math.sqrt(vector.reduce((sum, x) => sum + x * x, 0))
     return vector.map((x) => x / norm)
+  }
+
+  /**
+   * Unit vector whose dot distance from `atDistance(0)` is exactly `distance`.
+   */
+  function atDistance(distance: number): number[] {
+    const vector = new Array<number>(384).fill(0)
+    vector[0] = 1 - distance
+    vector[1] = Math.sqrt(1 - (1 - distance) ** 2)
+    return vector
   }
 
   /**
@@ -321,155 +320,92 @@ describe('VectorStore', () => {
   })
 
   describe('Phase 2: Hybrid Search', () => {
-    describe('Search with query text', () => {
-      it('should accept query text parameter for hybrid search', async () => {
-        const store = new VectorStore({
-          dbPath: testDbPath,
-          tableName: 'chunks',
-        })
-
-        await store.initialize()
-
-        // Insert test documents
-        const chunks = [
-          createTestChunk(
-            'ProjectLifetimeScope is a VContainer concept for dependency injection',
-            '/test/vcontainer.md',
-            0,
-            createNormalizedVector(1)
-          ),
-          createTestChunk(
-            'Profile Analyzer is a Unity tool for performance profiling',
-            '/test/profiler.md',
-            0,
-            createNormalizedVector(2)
-          ),
-          createTestChunk(
-            'Game patterns include Manager classes and LifetimeScope',
-            '/test/patterns.md',
-            0,
-            createNormalizedVector(3)
-          ),
-        ]
-
-        for (const chunk of chunks) {
-          await store.insertChunks([chunk])
-        }
-
-        // Search with exact keyword match
-        const queryVector = createNormalizedVector(1)
-        const results = await store.search(queryVector, {
-          queryText: 'ProjectLifetimeScope',
-          limit: 10,
-        })
-
-        // All 3 documents should be returned
-        expect(results).toHaveLength(3)
-
-        // With hybrid search, exact keyword match should rank higher
-        // The first result MUST contain "ProjectLifetimeScope"
-        expect(results[0]).toBeDefined()
-        expect(expectDefined(results[0]).text).toContain('ProjectLifetimeScope')
-        expect(expectDefined(results[0]).filePath).toBe('/test/vcontainer.md')
-      })
-
-      it('should fall back to vector-only search when query text is empty', async () => {
-        const store = new VectorStore({
-          dbPath: testDbPath,
-          tableName: 'chunks',
-        })
-
-        await store.initialize()
-
-        const chunk = createTestChunk(
-          'Test document for vector search',
-          '/test/doc.txt',
-          0,
-          createNormalizedVector(1)
-        )
-        await store.insertChunks([chunk])
-
-        // Search with empty query text (should use vector-only)
-        const results = await store.search(createNormalizedVector(1), { queryText: '', limit: 10 })
-
-        // Should return the inserted document via vector-only search
-        expect(results).toHaveLength(1)
-        expect(results[0]?.filePath).toBe('/test/doc.txt')
-        expect(results[0]?.text).toBe('Test document for vector search')
-      })
-
-      it('should maintain backward compatibility with vector-only search', async () => {
-        const store = new VectorStore({
-          dbPath: testDbPath,
-          tableName: 'chunks',
-        })
-
-        await store.initialize()
-
-        const chunk = createTestChunk(
-          'Backward compatibility test',
-          '/test/compat.txt',
-          0,
-          createNormalizedVector(1)
-        )
-        await store.insertChunks([chunk])
-
-        // Original search signature should still work (queryText = undefined)
-        const results = await store.search(createNormalizedVector(1), { limit: 10 })
-
-        // Should return the inserted document
-        expect(results).toHaveLength(1)
-        expect(results[0]?.filePath).toBe('/test/compat.txt')
-        expect(results[0]?.text).toBe('Backward compatibility test')
-      })
-    })
-
     describe('Japanese text support', () => {
-      it('should find Japanese documents with ngram tokenizer', async () => {
-        const store = new VectorStore({
-          dbPath: testDbPath,
-          tableName: 'chunks',
+      it('should boost a Japanese document through the ngram FTS index', async () => {
+        await withTempDb('japanese-ngram', async (store) => {
+          // Doc with Japanese text (keyword: dependency injection in Japanese)
+          const japaneseDoc = createTestChunk(
+            '依存性注入コンテナはオブジェクトのライフサイクルを管理します',
+            '/test/japanese.md',
+            0,
+            atDistance(0.4)
+          )
+
+          // Doc with English text only, closer to the query vector
+          const englishDoc = createTestChunk(
+            'Vector database stores embeddings for semantic search',
+            '/test/english.md',
+            0,
+            atDistance(0.3)
+          )
+
+          await store.insertChunks([japaneseDoc, englishDoc])
+
+          const results = await store.search(atDistance(0), { queryText: '依存性注入', limit: 10 })
+
+          // Vector distance alone ranks the English doc first; only an ngram
+          // match on the Japanese text boosts it to 0.4 / (1 + 0.6) = 0.25.
+          expect(results).toHaveLength(2)
+          expect(results[0]?.filePath).toBe('/test/japanese.md')
+          expect(results[0]?.score).toBeCloseTo(0.25)
+          expect(results[1]?.filePath).toBe('/test/english.md')
+          expect(results[1]?.score).toBeCloseTo(0.3)
         })
-
-        await store.initialize()
-
-        // Doc with Japanese text (keyword: dependency injection in Japanese)
-        const japaneseDoc = createTestChunk(
-          '依存性注入コンテナはオブジェクトのライフサイクルを管理します',
-          '/test/japanese.md',
-          0,
-          createNormalizedVector(10)
-        )
-
-        // Doc with English text only
-        const englishDoc = createTestChunk(
-          'Vector database stores embeddings for semantic search',
-          '/test/english.md',
-          0,
-          createNormalizedVector(1)
-        )
-
-        await store.insertChunks([japaneseDoc])
-        await store.insertChunks([englishDoc])
-
-        // Search with Japanese keyword
-        const queryVector = createNormalizedVector(1)
-        const results = await store.search(queryVector, { queryText: '依存性注入', limit: 10 })
-
-        // Verify Japanese document is found (ngram tokenizer works)
-        const foundJapanese = results.some((r) => r.filePath === '/test/japanese.md')
-        expect(foundJapanese).toBe(true)
-
-        // Verify both documents are returned
-        expect(results).toHaveLength(2)
       })
     })
   })
 
   describe('Search mode behavior', () => {
+    it.each([10, 100])(
+      'can promote keyword evidence while preserving a result limit of %i',
+      async (limit) => {
+        await withTempDb('keyword-candidate-depth', async (store, dbPath) => {
+          const queryVector = atDistance(0)
+          const nearby = Array.from({ length: 150 }, (_, index) =>
+            createTestChunk(
+              'Orchard harvest and apple storage instructions',
+              `/docs/orchard-${index}.txt`,
+              0,
+              atDistance(0.2 + index * 0.0001)
+            )
+          )
+          const evidence = createTestChunk(
+            'ZXQVKJ handling instructions',
+            '/docs/evidence.txt',
+            0,
+            atDistance(0.3)
+          )
+          await store.insertChunks([...nearby, evidence])
+
+          const vectorOnly = await store.search(queryVector, { limit })
+          expect(vectorOnly.some((row) => row.id === evidence.id)).toBe(false)
+
+          const boosted = await store.search(queryVector, { queryText: 'ZXQVKJ', limit })
+          expect(boosted).toHaveLength(limit)
+          expect(boosted[0]?.id).toBe(evidence.id)
+          expect(boosted[0]?.score).toBeCloseTo(0.3 / 1.6)
+
+          const scoped = await store.search(queryVector, {
+            queryText: 'ZXQVKJ',
+            limit: 10,
+            scope: ['/docs/orchard-0.txt'],
+          })
+          expect(scoped.map((row) => row.filePath)).toEqual(['/docs/orchard-0.txt'])
+
+          const grouped = new VectorStore({ dbPath, tableName: 'chunks', grouping: 'related' })
+          await grouped.initialize()
+          const groupedResults = await grouped.search(queryVector, {
+            queryText: 'ZXQVKJ',
+            limit: 10,
+          })
+          expect(groupedResults.some((row) => row.id === evidence.id)).toBe(false)
+        })
+      }
+    )
+
     /**
      * doc1 matches the keyword but is far from the query vector; doc2 is the
-     * reverse. So doc2 wins at hybridWeight=0 and doc1 wins at 0.6 and 1.
+     * reverse. So doc2 wins at hybridWeight=0, where the keyword boost is off.
      */
 
     it('should use vector similarity order when hybridWeight=0', async () => {
@@ -519,104 +455,6 @@ describe('VectorStore', () => {
       } finally {
         if (fs.existsSync(vectorOnlyDbPath)) {
           fs.rmSync(vectorOnlyDbPath, { recursive: true })
-        }
-      }
-    })
-
-    it('should boost keyword matches when hybridWeight=1', async () => {
-      const ftsOnlyDbPath = './tmp/test-vectordb-fts-only'
-      if (fs.existsSync(ftsOnlyDbPath)) {
-        fs.rmSync(ftsOnlyDbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath: ftsOnlyDbPath,
-          tableName: 'chunks',
-          hybridWeight: 1, // Maximum keyword boost
-        })
-        await store.initialize()
-
-        const queryVector = createNormalizedVector(1)
-
-        // doc1: Has keyword match, but farther vector distance
-        const doc1 = createTestChunk(
-          'UniqueKeyword appears in this document about something else',
-          '/test/keyword-match.md',
-          0,
-          createNormalizedVector(5)
-        )
-
-        // doc2: No keyword match, but closer vector distance
-        const doc2 = createTestChunk(
-          'This document has similar semantic meaning without the special term',
-          '/test/vector-match.md',
-          0,
-          createNormalizedVector(3)
-        )
-
-        await store.insertChunks([doc1])
-        await store.insertChunks([doc2])
-
-        const results = await store.search(queryVector, { queryText: 'UniqueKeyword', limit: 10 })
-
-        expect(results).toHaveLength(2)
-
-        // Keyword match should boost doc1 to rank higher despite farther vector distance
-        expect(results[0]?.filePath).toBe('/test/keyword-match.md')
-        expect(results[1]?.filePath).toBe('/test/vector-match.md')
-      } finally {
-        if (fs.existsSync(ftsOnlyDbPath)) {
-          fs.rmSync(ftsOnlyDbPath, { recursive: true })
-        }
-      }
-    })
-
-    it('should apply keyword boost with default hybridWeight=0.6', async () => {
-      const hybridDbPath = './tmp/test-vectordb-hybrid'
-      if (fs.existsSync(hybridDbPath)) {
-        fs.rmSync(hybridDbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath: hybridDbPath,
-          tableName: 'chunks',
-          // hybridWeight not specified, uses default 0.6
-        })
-        await store.initialize()
-
-        const queryVector = createNormalizedVector(1)
-
-        // doc1: Has keyword match, but farther vector distance
-        const doc1 = createTestChunk(
-          'UniqueKeyword appears in this document about something else',
-          '/test/keyword-match.md',
-          0,
-          createNormalizedVector(5)
-        )
-
-        // doc2: No keyword match, but closer vector distance
-        const doc2 = createTestChunk(
-          'This document has similar semantic meaning without the special term',
-          '/test/vector-match.md',
-          0,
-          createNormalizedVector(3)
-        )
-
-        await store.insertChunks([doc1])
-        await store.insertChunks([doc2])
-
-        const results = await store.search(queryVector, { queryText: 'UniqueKeyword', limit: 10 })
-
-        expect(results).toHaveLength(2)
-
-        // Keyword match should boost doc1 to rank higher despite farther vector distance
-        expect(results[0]?.filePath).toBe('/test/keyword-match.md')
-        expect(results[1]?.filePath).toBe('/test/vector-match.md')
-      } finally {
-        if (fs.existsSync(hybridDbPath)) {
-          fs.rmSync(hybridDbPath, { recursive: true })
         }
       }
     })
@@ -691,169 +529,6 @@ describe('VectorStore', () => {
         }
       }
     })
-
-    it('returns chunks from top 2 files when maxFiles=2', async () => {
-      const dbPath = './tmp/test-vectordb-maxfiles-2'
-      if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath,
-          tableName: 'chunks',
-          maxFiles: 2,
-        })
-        await store.initialize()
-
-        const queryVector = createNormalizedVector(1)
-
-        // File A: close to query (seed=1, distance~0)
-        await store.insertChunks([
-          createTestChunk('File A chunk', '/test/fileA.txt', 0, createNormalizedVector(1)),
-        ])
-
-        // File B: medium distance (seed=2, distance~0.46)
-        await store.insertChunks([
-          createTestChunk('File B chunk', '/test/fileB.txt', 0, createNormalizedVector(2)),
-        ])
-
-        // File C: far from query (seed=3, distance~1.41)
-        await store.insertChunks([
-          createTestChunk('File C chunk', '/test/fileC.txt', 0, createNormalizedVector(3)),
-        ])
-
-        const results = await store.search(queryVector, { queryText: '', limit: 10 })
-
-        // File A and File B should remain, File C excluded
-        expect(results.length).toBe(2)
-        const filePaths = results.map((r) => r.filePath)
-        expect(filePaths).toContain('/test/fileA.txt')
-        expect(filePaths).toContain('/test/fileB.txt')
-        expect(filePaths).not.toContain('/test/fileC.txt')
-      } finally {
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
-        }
-      }
-    })
-
-    it('returns all results when maxFiles is not set', async () => {
-      const dbPath = './tmp/test-vectordb-maxfiles-unset'
-      if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath,
-          tableName: 'chunks',
-          // maxFiles not set
-        })
-        await store.initialize()
-
-        const queryVector = createNormalizedVector(1)
-
-        await store.insertChunks([
-          createTestChunk('File A chunk', '/test/fileA.txt', 0, createNormalizedVector(1)),
-        ])
-        await store.insertChunks([
-          createTestChunk('File B chunk', '/test/fileB.txt', 0, createNormalizedVector(10)),
-        ])
-        await store.insertChunks([
-          createTestChunk('File C chunk', '/test/fileC.txt', 0, createNormalizedVector(50)),
-        ])
-
-        const results = await store.search(queryVector, { queryText: '', limit: 10 })
-
-        // All 3 files should be returned
-        expect(results).toHaveLength(3)
-        const filePaths = results.map((r) => r.filePath)
-        expect(filePaths).toContain('/test/fileA.txt')
-        expect(filePaths).toContain('/test/fileB.txt')
-        expect(filePaths).toContain('/test/fileC.txt')
-      } finally {
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
-        }
-      }
-    })
-
-    it('returns all results when maxFiles >= unique file count', async () => {
-      const dbPath = './tmp/test-vectordb-maxfiles-exceeds'
-      if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath,
-          tableName: 'chunks',
-          maxFiles: 5, // More than the 2 files we'll insert
-        })
-        await store.initialize()
-
-        const queryVector = createNormalizedVector(1)
-
-        await store.insertChunks([
-          createTestChunk('File A chunk', '/test/fileA.txt', 0, createNormalizedVector(1)),
-        ])
-        await store.insertChunks([
-          createTestChunk('File B chunk', '/test/fileB.txt', 0, createNormalizedVector(10)),
-        ])
-
-        const results = await store.search(queryVector, { queryText: '', limit: 10 })
-
-        // All files returned since maxFiles > unique files
-        expect(results).toHaveLength(2)
-      } finally {
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
-        }
-      }
-    })
-
-    it('composes correctly with grouping (grouping reduces, then maxFiles further filters)', async () => {
-      const dbPath = './tmp/test-vectordb-grouping-maxfiles'
-      if (fs.existsSync(dbPath)) {
-        fs.rmSync(dbPath, { recursive: true })
-      }
-
-      try {
-        const store = new VectorStore({
-          dbPath,
-          tableName: 'chunks',
-          grouping: 'similar', // Cuts at first boundary
-          maxFiles: 1, // Then keep only 1 file
-        })
-        await store.initialize()
-
-        const queryVector = createNormalizedVector(1)
-
-        // Group 1: 2 files, both close to query (identical vectors = same group)
-        await store.insertChunks([
-          createTestChunk('File A in group 1', '/test/fileA.txt', 0, createNormalizedVector(1)),
-        ])
-        await store.insertChunks([
-          createTestChunk('File B in group 1', '/test/fileB.txt', 0, createNormalizedVector(1)),
-        ])
-
-        // Group 2: far from query (creates clear boundary)
-        await store.insertChunks([
-          createTestChunk('File C in group 2', '/test/fileC.txt', 0, createNormalizedVector(200)),
-        ])
-
-        const results = await store.search(queryVector, { queryText: '', limit: 10 })
-
-        // Grouping should remove File C (group 2), then maxFiles=1 keeps only 1 file from group 1
-        expect(results).toHaveLength(1)
-        expect(results[0]?.filePath).not.toBe('/test/fileC.txt')
-      } finally {
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
-        }
-      }
-    })
   })
 
   /**
@@ -862,78 +537,6 @@ describe('VectorStore', () => {
    * With no significant gap, or a single result, everything is returned.
    */
   describe('Grouping algorithm (statistical threshold)', () => {
-    describe('Contract guarantees', () => {
-      it('returns single result as-is without grouping', async () => {
-        const contractDbPath1 = './tmp/test-vectordb-contract-single'
-        if (fs.existsSync(contractDbPath1)) {
-          fs.rmSync(contractDbPath1, { recursive: true })
-        }
-
-        try {
-          const store = new VectorStore({
-            dbPath: contractDbPath1,
-            tableName: 'chunks',
-            grouping: 'similar',
-          })
-          await store.initialize()
-
-          const chunk = createTestChunk(
-            'Only document',
-            '/test/only.txt',
-            0,
-            createNormalizedVector(1)
-          )
-          await store.insertChunks([chunk])
-
-          const results = await store.search(createNormalizedVector(1), {
-            queryText: '',
-            limit: 10,
-          })
-
-          // Contract: Single result returned as-is
-          expect(results).toHaveLength(1)
-          expect(results[0]?.text).toBe('Only document')
-        } finally {
-          if (fs.existsSync(contractDbPath1)) {
-            fs.rmSync(contractDbPath1, { recursive: true })
-          }
-        }
-      })
-
-      it('returns all results when no significant gaps exist', async () => {
-        const contractDbPath2 = './tmp/test-vectordb-contract-no-gaps'
-        if (fs.existsSync(contractDbPath2)) {
-          fs.rmSync(contractDbPath2, { recursive: true })
-        }
-
-        try {
-          const store = new VectorStore({
-            dbPath: contractDbPath2,
-            tableName: 'chunks',
-            grouping: 'similar',
-          })
-          await store.initialize()
-
-          const baseVector = createNormalizedVector(1)
-
-          // All documents use identical vectors = all gaps are 0 = no significant gaps
-          for (let i = 0; i < 4; i++) {
-            const chunk = createTestChunk(`Doc ${i}`, `/test/doc${i}.txt`, 0, baseVector)
-            await store.insertChunks([chunk])
-          }
-
-          const results = await store.search(baseVector, { queryText: '', limit: 10 })
-
-          // Contract: No significant gaps → return all results
-          expect(results).toHaveLength(4)
-        } finally {
-          if (fs.existsSync(contractDbPath2)) {
-            fs.rmSync(contractDbPath2, { recursive: true })
-          }
-        }
-      })
-    })
-
     describe('Similar mode behavior', () => {
       it('returns first group only when clear boundary exists', async () => {
         await withTempDb(
@@ -968,92 +571,6 @@ describe('VectorStore', () => {
         )
       })
     })
-
-    describe('Related mode behavior', () => {
-      it('returns all results when only one boundary exists', async () => {
-        await withTempDb(
-          'related-one-boundary',
-          async (store) => {
-            const baseVector = createNormalizedVector(1)
-
-            // Group 1: 3 documents with identical vectors
-            for (let i = 0; i < 3; i++) {
-              await store.insertChunks([
-                createTestChunk(`Group1 Doc ${i}`, `/test/group1-${i}.txt`, 0, baseVector),
-              ])
-            }
-
-            // Group 2: 2 documents with very different vectors (creates ONE boundary)
-            const farVector = createNormalizedVector(100)
-            for (let i = 0; i < 2; i++) {
-              await store.insertChunks([
-                createTestChunk(`Group2 Doc ${i}`, `/test/group2-${i}.txt`, 0, farVector),
-              ])
-            }
-
-            const results = await store.search(baseVector, { queryText: '', limit: 10 })
-
-            // Contract: 'related' mode with only 1 boundary → return all results
-            expect(results).toHaveLength(5)
-            expect(countFromGroup(results, 'Group1')).toBe(3)
-            expect(countFromGroup(results, 'Group2')).toBe(2)
-          },
-          { grouping: 'related' }
-        )
-      })
-    })
-
-    describe('Similar vs Related comparison', () => {
-      it('related mode returns same or more results than similar mode with identical data', async () => {
-        const baseVector = createNormalizedVector(1)
-
-        // VERY clear group structure so the statistical threshold
-        // (mean + 1.5*std) detects the boundary:
-        // Group 1: 3 docs with identical vectors (seed 1) — gaps within group = 0
-        // Group 2: 2 docs with very different vectors (seed 200)
-        const testChunks = [
-          createTestChunk('Group1 Doc 0', '/test/g1-0.txt', 0, createNormalizedVector(1)),
-          createTestChunk('Group1 Doc 1', '/test/g1-1.txt', 0, createNormalizedVector(1)),
-          createTestChunk('Group1 Doc 2', '/test/g1-2.txt', 0, createNormalizedVector(1)),
-          createTestChunk('Group2 Doc 0', '/test/g2-0.txt', 0, createNormalizedVector(200)),
-          createTestChunk('Group2 Doc 1', '/test/g2-1.txt', 0, createNormalizedVector(200)),
-        ]
-
-        /** Search the same fixture under one grouping mode. */
-        const searchUnderGrouping = async (
-          name: string,
-          grouping: 'similar' | 'related'
-        ): Promise<SearchResult[]> => {
-          let results: SearchResult[] = []
-          await withTempDb(
-            name,
-            async (store) => {
-              for (const chunk of testChunks) {
-                await store.insertChunks([chunk])
-              }
-              results = await store.search(baseVector, { queryText: '', limit: 10 })
-            },
-            { grouping }
-          )
-          return results
-        }
-
-        const similarResults = await searchUnderGrouping('similar-compare', 'similar')
-        const relatedResults = await searchUnderGrouping('related-compare', 'related')
-
-        // Contract: 'similar' cuts at the first boundary, 'related' at the
-        // second (or returns all if only one exists).
-        expect(relatedResults.length).toBeGreaterThanOrEqual(similarResults.length)
-        expect(similarResults.length).toBeGreaterThanOrEqual(1)
-        expect(relatedResults.length).toBeGreaterThanOrEqual(1)
-
-        // Group1 is always prioritized, and 'related' never drops any of it.
-        const similarGroup1Count = similarResults.filter((r) => r.text.includes('Group1')).length
-        const relatedGroup1Count = relatedResults.filter((r) => r.text.includes('Group1')).length
-        expect(similarGroup1Count).toBeGreaterThanOrEqual(1)
-        expect(relatedGroup1Count).toBeGreaterThanOrEqual(similarGroup1Count)
-      })
-    })
   })
 
   describe('fileTitle support', () => {
@@ -1064,7 +581,6 @@ describe('VectorStore', () => {
           filePath: '/test/doc.md',
           chunkIndex: 0,
           text: 'Test content',
-          metadata: { fileName: 'doc.md', fileSize: 100, fileType: 'md' },
           _distance: 0.5,
           fileTitle: 'My Document',
         }
@@ -1079,41 +595,11 @@ describe('VectorStore', () => {
           filePath: '/test/doc.md',
           chunkIndex: 0,
           text: 'Test content',
-          metadata: { fileName: 'doc.md', fileSize: 100, fileType: 'md' },
           _distance: 0.5,
         }
 
         const result = toSearchResult(raw)
         expect(result.fileTitle).toBe(null)
-      })
-    })
-
-    describe('isLanceDBRawResult backward compatibility', () => {
-      it('should accept results without fileTitle (regression guard)', () => {
-        const rawWithoutTitle = {
-          id: 'row-1',
-          filePath: '/test/doc.md',
-          chunkIndex: 0,
-          text: 'Test content',
-          metadata: { fileName: 'doc.md', fileSize: 100, fileType: 'md' },
-          _distance: 0.5,
-        }
-
-        expect(isLanceDBRawResult(rawWithoutTitle)).toBe(true)
-      })
-
-      it('should accept results with fileTitle', () => {
-        const rawWithTitle = {
-          id: 'row-1',
-          filePath: '/test/doc.md',
-          chunkIndex: 0,
-          text: 'Test content',
-          metadata: { fileName: 'doc.md', fileSize: 100, fileType: 'md' },
-          _distance: 0.5,
-          fileTitle: 'My Document',
-        }
-
-        expect(isLanceDBRawResult(rawWithTitle)).toBe(true)
       })
     })
 
@@ -1135,6 +621,7 @@ describe('VectorStore', () => {
             chunkIndex: 0,
             text: 'Old document without fileTitle',
             vector: createNormalizedVector(1),
+            // The nested struct 0.22.1 wrote; the migration drops it.
             metadata: {
               fileName: 'old-doc.txt',
               fileSize: 100,
@@ -1159,11 +646,6 @@ describe('VectorStore', () => {
             chunkIndex: 0,
             text: 'New document with fileTitle',
             vector: createNormalizedVector(2),
-            metadata: {
-              fileName: 'new-doc.txt',
-              fileSize: 100,
-              fileType: 'txt',
-            },
             fileTitle: 'New Document Title',
             timestamp: new Date().toISOString(),
           }
@@ -1185,56 +667,6 @@ describe('VectorStore', () => {
           const oldDocResult = results.find((r) => r.filePath === '/test/old-doc.txt')
           expect(oldDocResult).toBeDefined()
           expect(expectDefined(oldDocResult).fileTitle).toBe(null)
-        } finally {
-          if (fs.existsSync(dbPath)) {
-            fs.rmSync(dbPath, { recursive: true })
-          }
-        }
-      })
-
-      it('should be idempotent (running migration twice does nothing on second call)', async () => {
-        const dbPath = './tmp/test-vectordb-schema-idempotent'
-        if (fs.existsSync(dbPath)) {
-          fs.rmSync(dbPath, { recursive: true })
-        }
-
-        try {
-          // First initialization with data
-          const store1 = new VectorStore({
-            dbPath,
-            tableName: 'chunks',
-          })
-          await store1.initialize()
-
-          const chunk = createTestChunk(
-            'Test document',
-            '/test/doc.txt',
-            0,
-            createNormalizedVector(1)
-          )
-          await store1.insertChunks([chunk])
-
-          // Second initialization (should not throw)
-          const store2 = new VectorStore({
-            dbPath,
-            tableName: 'chunks',
-          })
-          await store2.initialize()
-
-          // Third initialization (should still not throw)
-          const store3 = new VectorStore({
-            dbPath,
-            tableName: 'chunks',
-          })
-          await store3.initialize()
-
-          // Search should still work
-          const results = await store3.search(createNormalizedVector(1), {
-            queryText: '',
-            limit: 10,
-          })
-          expect(results).toHaveLength(1)
-          expect(results[0]?.filePath).toBe('/test/doc.txt')
         } finally {
           if (fs.existsSync(dbPath)) {
             fs.rmSync(dbPath, { recursive: true })
@@ -1265,9 +697,6 @@ describe('VectorStore', () => {
       await db.close()
       return names
     }
-
-    const byChunkIndex = (chunks: VectorChunk[]): VectorChunk[] =>
-      [...chunks].sort((a, b) => a.chunkIndex - b.chunkIndex)
 
     it('should expose a contentHash column and round-trip a hex digest on a freshly created table', async () => {
       await withTempDb('content-hash-fresh', async (store, dbPath) => {
@@ -1415,41 +844,6 @@ describe('VectorStore', () => {
       }
     })
 
-    it('should store every chunk of one file without a hash (hashless file)', async () => {
-      await withTempDb('content-hash-hashless', async (store) => {
-        const filePath = '/test/hashless.md'
-        await store.insertChunks([
-          createTestChunk('one', filePath, 0, createNormalizedVector(1)),
-          createTestChunk('two', filePath, 1, createNormalizedVector(2)),
-          createTestChunk('three', filePath, 2, createNormalizedVector(3)),
-        ])
-
-        const rows = byChunkIndex(await store.getChunksByFilePath(filePath))
-        expect(rows.map((row) => row.chunkIndex)).toEqual([0, 1, 2])
-        expect(rows.map((row) => row.contentHash)).toEqual([undefined, undefined, undefined])
-      })
-    })
-
-    it('should store different and missing per-chunk hashes for one file (conflicting hashes)', async () => {
-      await withTempDb('content-hash-conflicting', async (store) => {
-        const filePath = '/test/conflicting.md'
-        await store.insertChunks([
-          {
-            ...createTestChunk('one', filePath, 0, createNormalizedVector(1)),
-            contentHash: HASH_ONE,
-          },
-          {
-            ...createTestChunk('two', filePath, 1, createNormalizedVector(2)),
-            contentHash: HASH_TWO,
-          },
-          createTestChunk('three', filePath, 2, createNormalizedVector(3)),
-        ])
-
-        const rows = byChunkIndex(await store.getChunksByFilePath(filePath))
-        expect(rows.map((row) => row.contentHash)).toEqual([HASH_ONE, HASH_TWO, undefined])
-      })
-    })
-
     /**
      * `listSyncManifest` is the DB-manifest projection sync reconciles against.
      * It must preserve verbatim stored spellings (they are the deletion keys),
@@ -1460,7 +854,7 @@ describe('VectorStore', () => {
     describe('listSyncManifest projection', () => {
       // Row order is not a storage contract, so compare as a code-point-sorted
       // list (hashless entries first) rather than asserting insertion order.
-      const compare = (a: string, b: string): number => {
+      const compare = (a: string, b: string): -1 | 0 | 1 => {
         if (a < b) {
           return -1
         }
@@ -1637,7 +1031,6 @@ describe('VectorStore', () => {
           createNormalizedVector(2),
           createNormalizedVector(3),
         ],
-        fileSize: 42,
         fileTitle: null,
         contentHash: HELLO_SHA256,
       })
@@ -1655,7 +1048,6 @@ describe('VectorStore', () => {
         filePath: '/test/hashless.md',
         chunks: textChunks(2),
         embeddings: [createNormalizedVector(1), createNormalizedVector(2)],
-        fileSize: 42,
         fileTitle: null,
         contentHash: null,
       })
@@ -1667,7 +1059,7 @@ describe('VectorStore', () => {
     })
 
     it('should store one identical hash of the file bytes on every chunk of an ingested file', async () => {
-      await withTempDb('ingest-content-hash', async (store) => {
+      await withTempDb('ingest-content-hash', async (store, dbPath) => {
         const filePath = writeSourceFile('hello.md', 'hello')
         const { parser, chunker, embedder } = ingestCollaborators({
           parsedText: 'parsed text that is deliberately not the file bytes',
@@ -1675,6 +1067,7 @@ describe('VectorStore', () => {
         })
 
         const inserted = await ingestSingleFile(filePath, {
+          dbPath,
           parser,
           chunker,
           embedder,
@@ -1694,7 +1087,7 @@ describe('VectorStore', () => {
     })
 
     it('should keep previously stored rows when vector construction fails during re-ingest', async () => {
-      await withTempDb('ingest-construct-before-delete', async (store) => {
+      await withTempDb('ingest-construct-before-delete', async (store, dbPath) => {
         const filePath = writeSourceFile('kept.md', 'hello')
         await store.insertChunks([
           createTestChunk('stored one', filePath, 0, createNormalizedVector(1)),
@@ -1709,7 +1102,7 @@ describe('VectorStore', () => {
         })
 
         await expect(
-          ingestSingleFile(filePath, { parser, chunker, embedder, vectorStore: store })
+          ingestSingleFile(filePath, { dbPath, parser, chunker, embedder, vectorStore: store })
         ).rejects.toThrow('Missing embedding for chunk 1')
 
         const rows = byChunkIndex(await store.getChunksByFilePath(filePath))
@@ -1989,39 +1382,6 @@ describe('VectorStore', () => {
       })
     })
 
-    it('treats /a/b, /a/b/ and /a/b// as equivalent (trailing-separator normalization)', async () => {
-      await withTempDb('scope-normalize', async (store) => {
-        await store.insertChunks([
-          createTestChunk('inside', '/a/b/x.md', 0, createNormalizedVector(1)),
-          createTestChunk('exact dir', '/a/b', 0, createNormalizedVector(2)),
-          createTestChunk('boundary', '/a/bc.md', 0, createNormalizedVector(3)),
-        ])
-
-        const plain = await scopedFilePaths(store, ['/a/b'])
-        const oneSlash = await scopedFilePaths(store, ['/a/b/'])
-        const twoSlash = await scopedFilePaths(store, ['/a/b//'])
-
-        expect(plain).toEqual(['/a/b', '/a/b/x.md'])
-        expect(oneSlash).toEqual(plain)
-        expect(twoSlash).toEqual(plain)
-      })
-    })
-
-    it('matches everything under a root scope without doubling the separator', async () => {
-      await withTempDb('scope-root', async (store) => {
-        await store.insertChunks([
-          createTestChunk('top-level', '/a.md', 0, createNormalizedVector(1)),
-          createTestChunk('nested', '/deep/nested.md', 0, createNormalizedVector(2)),
-        ])
-
-        // Root scope '/' must become LIKE '/%' (not '//%'), matching every
-        // posix path; the root itself is not normalized away to empty.
-        const paths = await scopedFilePaths(store, ['/'])
-
-        expect(paths).toEqual(['/a.md', '/deep/nested.md'])
-      })
-    })
-
     it('unions results across multiple prefixes', async () => {
       await withTempDb('scope-multi', async (store) => {
         await store.insertChunks([
@@ -2186,104 +1546,60 @@ describe('VectorStore', () => {
         ftsSpy.mockRestore()
       })
     })
+  })
 
-    it('keeps scope-absent hybrid results unchanged (backward compatible)', async () => {
-      await withTempDb('fts-scope-absent', async (store) => {
-        await store.insertChunks([
-          createTestChunk('alpha keyword a', '/a/x.md', 0, createNormalizedVector(1)),
-          createTestChunk('alpha keyword b', '/b/y.md', 0, createNormalizedVector(2)),
+  describe('metadata column removal', () => {
+    it('should drop the unused metadata column from a table written before the removal', async () => {
+      const dbPath = './tmp/test-vectordb-metadata-drop-migration'
+      fs.rmSync(dbPath, { recursive: true, force: true })
+
+      try {
+        // A database written by 0.22.1 carries the nested `metadata` struct.
+        // Nothing reads it, so the migration drops it rather than renaming the
+        // misleading `fileSize` inside it.
+        const { connect: lanceConnect } = await import('@lancedb/lancedb')
+        const legacyDb = await lanceConnect(dbPath)
+        await legacyDb.createTable('chunks', [
+          {
+            id: randomUUID(),
+            filePath: '/test/legacy-metadata.md',
+            chunkIndex: 0,
+            text: 'Row written before the metadata column was dropped',
+            vector: createNormalizedVector(1),
+            metadata: { fileName: 'legacy-metadata.md', fileSize: 48, fileType: 'md' },
+            fileTitle: 'Legacy document',
+            timestamp: new Date().toISOString(),
+          },
         ])
+        await legacyDb.close()
 
-        const results = await store.search(createNormalizedVector(1), {
-          queryText: 'alpha',
-          limit: 20,
-        })
-        const paths = [...new Set(results.map((r) => r.filePath))].sort()
+        // Opening through the store runs ensureSchemaVersion.
+        const reopened = new VectorStore({ dbPath, tableName: 'chunks' })
+        await reopened.initialize()
 
-        // No scope → FTS branch runs over all vector hits → every corpus surfaces.
-        expect(paths).toEqual(['/a/x.md', '/b/y.md'])
-      })
-    })
+        const verifyDb = await lanceConnect(dbPath)
+        const schema = await (await verifyDb.openTable('chunks')).schema()
+        const fields = schema.fields.map((field: { name: string }) => field.name)
+        await verifyDb.close()
+        expect(fields).not.toContain('metadata')
 
-    it('inherits scope on the FTS branch for backslash-style stored paths', async () => {
-      await withTempDb('fts-scope-backslash', async (store) => {
-        await store.insertChunks([
-          createTestChunk('alpha win inside', 'C:\\docs\\a.md', 0, createNormalizedVector(1)),
-          createTestChunk('alpha win boundary', 'C:\\docsX\\b.md', 0, createNormalizedVector(2)),
+        const legacyRows = await reopened.getChunksByFilePath('/test/legacy-metadata.md')
+        expect(legacyRows).toHaveLength(1)
+        expect(legacyRows[0]?.text).toBe('Row written before the metadata column was dropped')
+        expect(legacyRows[0]).not.toHaveProperty('metadata')
+
+        // The migrated table must still accept an insert: a row still carrying
+        // the dropped struct would be rejected by LanceDB's schema check.
+        await reopened.insertChunks([
+          createTestChunk('after the drop', '/test/after-drop.md', 0, createNormalizedVector(2)),
         ])
-
-        const paths = await scopedHybridFilePaths(store, ['C:\\docs'], 'alpha')
-
-        expect(paths).toEqual(['C:\\docs\\a.md'])
-      })
-    })
-
-    it('matches an exact file scope on the FTS branch (exact-or-descendant)', async () => {
-      await withTempDb('fts-scope-exact-file', async (store) => {
-        await store.insertChunks([
-          createTestChunk('alpha the file', '/foo/bar.md', 0, createNormalizedVector(1)),
-          createTestChunk('alpha sibling', '/foo/bar.md.bak', 0, createNormalizedVector(2)),
-        ])
-
-        const paths = await scopedHybridFilePaths(store, ['/foo/bar.md'], 'alpha')
-
-        // Exact file scope matches the file itself; the .bak sibling is excluded.
-        expect(paths).toEqual(['/foo/bar.md'])
-      })
-    })
-
-    it('matches everything under a root scope on the FTS branch without doubling', async () => {
-      await withTempDb('fts-scope-root', async (store) => {
-        await store.insertChunks([
-          createTestChunk('alpha top', '/a.md', 0, createNormalizedVector(1)),
-          createTestChunk('alpha nested', '/deep/nested.md', 0, createNormalizedVector(2)),
-        ])
-
-        const paths = await scopedHybridFilePaths(store, ['/'], 'alpha')
-
-        expect(paths).toEqual(['/a.md', '/deep/nested.md'])
-      })
-    })
-
-    it('unions multiple prefixes on the FTS branch', async () => {
-      await withTempDb('fts-scope-multi', async (store) => {
-        await store.insertChunks([
-          createTestChunk('alpha corpus a', '/a/x.md', 0, createNormalizedVector(1)),
-          createTestChunk('alpha corpus b', '/b/y.md', 0, createNormalizedVector(2)),
-          createTestChunk('alpha corpus c', '/c/z.md', 0, createNormalizedVector(3)),
-        ])
-
-        const paths = await scopedHybridFilePaths(store, ['/a', '/b'], 'alpha')
-
-        expect(paths).toEqual(['/a/x.md', '/b/y.md'])
-      })
-    })
-
-    it('neutralizes an injection prefix on the FTS branch (quote/%/_)', async () => {
-      await withTempDb('fts-scope-injection', async (store) => {
-        const trickyDir = "/danger/o'_%dir"
-        await store.insertChunks([
-          createTestChunk(
-            'alpha inside tricky',
-            `${trickyDir}/child.md`,
-            0,
-            createNormalizedVector(1)
-          ),
-          createTestChunk(
-            'alpha wildcard decoy',
-            '/danger/oXY_ZZZdir/child.md',
-            0,
-            createNormalizedVector(2)
-          ),
-          createTestChunk('alpha unrelated', '/safe/file.md', 0, createNormalizedVector(3)),
-        ])
-
-        const paths = await scopedHybridFilePaths(store, [trickyDir], 'alpha')
-
-        // Only the literal descendant; %/_ must not act as wildcards and the
-        // quote must not break the predicate even through the FTS branch.
-        expect(paths).toEqual([`${trickyDir}/child.md`])
-      })
+        const inserted = await reopened.getChunksByFilePath('/test/after-drop.md')
+        expect(inserted).toHaveLength(1)
+        expect(inserted[0]?.text).toBe('after the drop')
+        await reopened.close()
+      } finally {
+        fs.rmSync(dbPath, { recursive: true, force: true })
+      }
     })
   })
 })
@@ -2299,7 +1615,6 @@ describe('visualAttachments schema and hydration', () => {
       chunkIndex: 0,
       text: 'searchable attachment text',
       vector: new Array(384).fill(0).map((_, index) => (index === 0 ? 1 : 0)),
-      metadata: { fileName: path.basename(filePath), fileSize: 26, fileType: 'pdf' },
       fileTitle: null,
       visualAttachments,
       timestamp: new Date().toISOString(),
@@ -2466,7 +1781,6 @@ describe('visualProfile schema and persistence', () => {
       chunkIndex: 0,
       text: 'profile carrying text',
       vector: new Array(384).fill(0).map((_, index) => (index === 0 ? 1 : 0)),
-      metadata: { fileName: path.basename(filePath), fileSize: 21, fileType: 'pdf' },
       fileTitle: null,
       contentHash: 'a'.repeat(64),
       timestamp: new Date().toISOString(),

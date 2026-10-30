@@ -1,13 +1,12 @@
 // PDF Filter Unit Test
 
 import { describe, expect, it, vi } from 'vitest'
+import { splitIntoSentenceUnits } from '../../chunker/sentence-splitter.js'
 import {
   detectBlockAttributeCandidates,
   detectSentencePatterns,
   type EmbedderInterface,
   filterPageBoundaryLayouts,
-  filterPageBoundarySentences,
-  joinFilteredPages,
   type PageData,
 } from '../pdf-filter.js'
 
@@ -17,75 +16,6 @@ function bbox(x0: number, y0: number, x1: number, y1: number): [number, number, 
 }
 
 describe('pdf-filter', () => {
-  describe('joinFilteredPages', () => {
-    it('should join pages with double newline', () => {
-      const pages: PageData[] = [
-        {
-          pageNum: 1,
-          items: [{ text: 'Page 1', x: 0, y: 400, fontSize: 12, hasEOL: false }],
-        },
-        {
-          pageNum: 2,
-          items: [{ text: 'Page 2', x: 0, y: 400, fontSize: 12, hasEOL: false }],
-        },
-      ]
-
-      const text = joinFilteredPages(pages)
-      expect(text).toBe('Page 1\n\nPage 2')
-    })
-
-    it('should use hasEOL for line breaks within page', () => {
-      const pages: PageData[] = [
-        {
-          pageNum: 1,
-          items: [
-            { text: 'Line 1', x: 0, y: 400, fontSize: 12, hasEOL: true },
-            { text: 'Line 2', x: 0, y: 380, fontSize: 12, hasEOL: false },
-          ],
-        },
-      ]
-
-      const text = joinFilteredPages(pages)
-      expect(text).toBe('Line 1\nLine 2')
-    })
-
-    it('should skip empty pages', () => {
-      const pages: PageData[] = [
-        {
-          pageNum: 1,
-          items: [{ text: 'Content', x: 0, y: 400, fontSize: 12, hasEOL: false }],
-        },
-        {
-          pageNum: 2,
-          items: [],
-        },
-        {
-          pageNum: 3,
-          items: [{ text: 'More content', x: 0, y: 400, fontSize: 12, hasEOL: false }],
-        },
-      ]
-
-      const text = joinFilteredPages(pages)
-      expect(text).toBe('Content\n\nMore content')
-    })
-
-    it('should trim whitespace from each page', () => {
-      const pages: PageData[] = [
-        {
-          pageNum: 1,
-          items: [
-            { text: '  ', x: 0, y: 500, fontSize: 12, hasEOL: true },
-            { text: 'Content', x: 0, y: 400, fontSize: 12, hasEOL: true },
-            { text: '  ', x: 0, y: 300, fontSize: 12, hasEOL: false },
-          ],
-        },
-      ]
-
-      const text = joinFilteredPages(pages)
-      expect(text).toBe('Content')
-    })
-  })
-
   // ============================================
   // Sentence-Level Header/Footer Detection Tests
   // ============================================
@@ -264,31 +194,6 @@ describe('pdf-filter', () => {
       expect(result.headerSimilarity).toBeLessThan(0.85)
     })
 
-    it('should use median similarity (even number of pairs)', async () => {
-      // 4 pages = 6 pairwise comparisons (even)
-      // Pairs: (0,1), (0,2), (0,3), (1,2), (1,3), (2,3)
-      const pages = createPagesWithSentences([
-        ['Header A.', 'Content A.'],
-        ['Header B.', 'Content B.'],
-        ['Header C.', 'Content C.'],
-        ['Header D.', 'Content D.'],
-      ])
-
-      // All similar embeddings → high median
-      const embedder = createMockEmbedder([
-        [1, 0, 0],
-        [0.99, 0.1, 0],
-        [0.98, 0.15, 0],
-        [0.97, 0.2, 0],
-      ])
-
-      const result = await detectSentencePatterns(pages, embedder, { minPages: 3 })
-
-      // All pairs have high similarity, median should be high
-      expect(result.removeFirstSentence).toBe(true)
-      expect(result.headerSimilarity).toBeGreaterThan(0.85)
-    })
-
     it('should be robust to outliers using median', async () => {
       // 5 pages = 10 pairwise comparisons
       // With one outlier page, mean would be dragged down
@@ -317,107 +222,6 @@ describe('pdf-filter', () => {
 
       // Despite outlier, median of majority similar pairs should be high
       expect(result.removeFirstSentence).toBe(true)
-    })
-
-    // ============================================
-    // Y Coordinate Merge Tests
-    // ============================================
-
-    it('should merge sentences with same Y coordinate', async () => {
-      // Create page with multiple items on same Y (same line)
-      const pages: PageData[] = [
-        {
-          pageNum: 1,
-          items: [
-            { text: 'Part A.', x: 0, y: 800, fontSize: 12, hasEOL: false },
-            { text: 'Part B.', x: 100, y: 800, fontSize: 12, hasEOL: true }, // Same Y
-            { text: 'Content line.', x: 0, y: 750, fontSize: 12, hasEOL: true },
-          ],
-        },
-        {
-          pageNum: 2,
-          items: [
-            { text: 'Part A.', x: 0, y: 800, fontSize: 12, hasEOL: false },
-            { text: 'Part B.', x: 100, y: 800, fontSize: 12, hasEOL: true }, // Same Y
-            { text: 'Content line 2.', x: 0, y: 750, fontSize: 12, hasEOL: true },
-          ],
-        },
-        {
-          pageNum: 3,
-          items: [
-            { text: 'Part A.', x: 0, y: 800, fontSize: 12, hasEOL: false },
-            { text: 'Part B.', x: 100, y: 800, fontSize: 12, hasEOL: true }, // Same Y
-            { text: 'Content line 3.', x: 0, y: 750, fontSize: 12, hasEOL: true },
-          ],
-        },
-      ]
-
-      // First sentences (merged: "Part A. Part B.") should be similar
-      const embedder: EmbedderInterface = {
-        embedBatch: vi
-          .fn()
-          .mockResolvedValueOnce([
-            // First sentences - similar (merged header)
-            [1, 0, 0],
-            [0.99, 0.05, 0],
-            [0.98, 0.1, 0],
-          ])
-          .mockResolvedValueOnce([
-            // Last sentences - dissimilar
-            [1, 0, 0],
-            [0, 1, 0],
-            [0, 0, 1],
-          ]),
-      }
-
-      const result = await detectSentencePatterns(pages, embedder, { minPages: 3 })
-
-      // Merged first line should be detected as header
-      expect(result.removeFirstSentence).toBe(true)
-    })
-
-    it('should treat different Y coordinates as separate sentences', async () => {
-      // Create page with items on different Y (different lines)
-      const pages: PageData[] = [
-        {
-          pageNum: 1,
-          items: [
-            { text: 'Line 1.', x: 0, y: 800, fontSize: 12, hasEOL: true },
-            { text: 'Line 2.', x: 0, y: 750, fontSize: 12, hasEOL: true }, // Different Y
-            { text: 'Line 3.', x: 0, y: 700, fontSize: 12, hasEOL: true },
-          ],
-        },
-        {
-          pageNum: 2,
-          items: [
-            { text: 'Different 1.', x: 0, y: 800, fontSize: 12, hasEOL: true },
-            { text: 'Different 2.', x: 0, y: 750, fontSize: 12, hasEOL: true },
-            { text: 'Different 3.', x: 0, y: 700, fontSize: 12, hasEOL: true },
-          ],
-        },
-        {
-          pageNum: 3,
-          items: [
-            { text: 'Another 1.', x: 0, y: 800, fontSize: 12, hasEOL: true },
-            { text: 'Another 2.', x: 0, y: 750, fontSize: 12, hasEOL: true },
-            { text: 'Another 3.', x: 0, y: 700, fontSize: 12, hasEOL: true },
-          ],
-        },
-      ]
-
-      // First sentences are different → no header detected
-      const embedder: EmbedderInterface = {
-        embedBatch: vi.fn().mockResolvedValue([
-          [1, 0, 0],
-          [0, 1, 0],
-          [0, 0, 1],
-        ]),
-      }
-
-      const result = await detectSentencePatterns(pages, embedder, { minPages: 3 })
-
-      // Different first lines should not be detected as header
-      expect(result.removeFirstSentence).toBe(false)
     })
 
     // ============================================
@@ -486,37 +290,6 @@ describe('pdf-filter', () => {
 
         // 0.78 < 0.85 (standard threshold) -> should NOT detect header
         expect(result.removeFirstSentence).toBe(false)
-      })
-
-      it('should work with items missing optional mupdf fields', async () => {
-        // Pages with plain items (no fontName, fontWeight)
-        const pages: PageData[] = Array.from({ length: 5 }, (_, i) => ({
-          pageNum: i + 1,
-          items: [
-            { text: `Line ${i + 1}.`, x: 0, y: 800, fontSize: 12, hasEOL: true },
-            { text: `Body ${i + 1}.`, x: 0, y: 400, fontSize: 12, hasEOL: true },
-          ],
-        }))
-
-        // detectBlockAttributeCandidates should work without errors
-        const hints = detectBlockAttributeCandidates(pages, { minPages: 3 })
-        expect(hints.medianFontSize).toBe(12)
-
-        // detectSentencePatterns without blockHints should work as before
-        const embedder: EmbedderInterface = {
-          embedBatch: vi.fn().mockResolvedValue([
-            [1, 0, 0],
-            [0, 1, 0],
-            [0, 0, 1],
-            [0.5, 0.5, 0],
-            [0.3, 0.3, 0.3],
-          ]),
-        }
-
-        const result = await detectSentencePatterns(pages, embedder, { minPages: 3 })
-        // Dissimilar embeddings -> no pattern detected
-        expect(result.removeFirstSentence).toBe(false)
-        expect(result.removeLastSentence).toBe(false)
       })
     })
   })
@@ -593,125 +366,8 @@ describe('pdf-filter', () => {
     })
   })
 
-  describe('filterPageBoundarySentences', () => {
-    const createMockEmbedder = (embeddings: number[][]): EmbedderInterface => ({
-      embedBatch: vi.fn().mockResolvedValue(embeddings),
-    })
-
-    const createPagesWithSentences = (sentences: string[][]): PageData[] =>
-      sentences.map((pageSentences, i) => ({
-        pageNum: i + 1,
-        items: pageSentences.map((text, j) => ({
-          text,
-          x: 0,
-          y: 800 - j * 20,
-          fontSize: 12,
-          hasEOL: true,
-        })),
-      }))
-
-    it('should return per-page text when pages < minPages', async () => {
-      const pages = createPagesWithSentences([['Single page content.']])
-      const embedder = createMockEmbedder([])
-
-      const result = await filterPageBoundarySentences(pages, embedder)
-
-      expect(result).toEqual(['Single page content.'])
-      expect(embedder.embedBatch).not.toHaveBeenCalled()
-    })
-
-    it('should remove detected header sentences', async () => {
-      const pages = createPagesWithSentences([
-        ['Header pattern.', 'Page 1 content.'],
-        ['Header pattern.', 'Page 2 content.'],
-        ['Header pattern.', 'Page 3 content.'],
-      ])
-
-      // Similar first sentences, dissimilar last sentences
-      const embedder: EmbedderInterface = {
-        embedBatch: vi
-          .fn()
-          .mockResolvedValueOnce([
-            // First sentences - similar (header pattern)
-            [1, 0, 0],
-            [0.99, 0.05, 0],
-            [0.98, 0.1, 0],
-          ])
-          .mockResolvedValueOnce([
-            // Last sentences - dissimilar (unique content)
-            [1, 0, 0],
-            [0, 1, 0],
-            [0, 0, 1],
-          ]),
-      }
-
-      const result = await filterPageBoundarySentences(pages, embedder, { minPages: 3 })
-      const joined = result.join('\n\n')
-
-      // Should not contain "Header pattern"
-      expect(joined).not.toContain('Header pattern')
-      expect(joined).toContain('Page 1 content')
-      expect(joined).toContain('Page 2 content')
-      expect(joined).toContain('Page 3 content')
-    })
-
-    it('should remove detected footer sentences', async () => {
-      const pages = createPagesWithSentences([
-        ['Page 1 content.', 'Footer pattern.'],
-        ['Page 2 content.', 'Footer pattern.'],
-        ['Page 3 content.', 'Footer pattern.'],
-      ])
-
-      // Dissimilar first, similar last
-      const embedder: EmbedderInterface = {
-        embedBatch: vi
-          .fn()
-          .mockResolvedValueOnce([
-            [1, 0, 0],
-            [0, 1, 0],
-            [0, 0, 1],
-          ])
-          .mockResolvedValueOnce([
-            [1, 0, 0],
-            [0.99, 0.05, 0],
-            [0.98, 0.1, 0],
-          ]),
-      }
-
-      const result = await filterPageBoundarySentences(pages, embedder, { minPages: 3 })
-      const joined = result.join('\n\n')
-
-      expect(joined).not.toContain('Footer pattern')
-      expect(joined).toContain('Page 1 content')
-    })
-
-    it('should preserve content when no patterns detected', async () => {
-      const pages = createPagesWithSentences([
-        ['Unique A.', 'Content A.', 'End A.'],
-        ['Unique B.', 'Content B.', 'End B.'],
-        ['Unique C.', 'Content C.', 'End C.'],
-      ])
-
-      // All dissimilar
-      const embedder: EmbedderInterface = {
-        embedBatch: vi.fn().mockResolvedValue([
-          [1, 0, 0],
-          [0, 1, 0],
-          [0, 0, 1],
-        ]),
-      }
-
-      const result = await filterPageBoundarySentences(pages, embedder, { minPages: 3 })
-      const joined = result.join('\n\n')
-
-      expect(joined).toContain('Unique A')
-      expect(joined).toContain('Content A')
-      expect(joined).toContain('End A')
-    })
-  })
-
   describe('filterPageBoundaryLayouts', () => {
-    it('preserves legacy line order with exact fragment ranges', async () => {
+    it('preserves native block order with exact fragment ranges', async () => {
       const pages: PageData[] = [
         {
           pageNum: 1,
@@ -774,12 +430,12 @@ describe('pdf-filter', () => {
 
       const [layout] = await filterPageBoundaryLayouts(pages, embedder)
 
-      expect(layout?.text).toBe('Heading\nLeft one Right one\nLeft two Right two')
+      expect(layout?.text).toBe('Heading\nLeft one Left two\nRight one Right two')
       expect(layout?.textFragments.map((fragment) => fragment.text)).toEqual([
         'Heading',
         'Left one',
-        'Right one',
         'Left two',
+        'Right one',
         'Right two',
       ])
       expect(
@@ -787,7 +443,7 @@ describe('pdf-filter', () => {
           layout.text.slice(fragment.pageTextStart, fragment.pageTextEnd)
         )
       ).toEqual(layout?.textFragments.map((fragment) => fragment.text))
-      expect(layout?.textFragments[3]).toMatchObject({
+      expect(layout?.textFragments[2]).toMatchObject({
         pageNum: 1,
         blockOrdinal: 1,
         lineOrdinal: 1,
@@ -795,6 +451,26 @@ describe('pdf-filter', () => {
         bbox: [40, 120, 250, 140],
       })
       expect(embedder.embedBatch).not.toHaveBeenCalled()
+    })
+
+    it('uses supplied item order for fixtures without native ordinals', async () => {
+      const pages: PageData[] = [
+        {
+          pageNum: 1,
+          items: [
+            { text: 'Source first', x: 200, y: 100, fontSize: 12, hasEOL: true },
+            { text: 'Source second', x: 20, y: 780, fontSize: 12, hasEOL: true },
+          ],
+        },
+      ]
+
+      const [layout] = await filterPageBoundaryLayouts(pages, { embedBatch: vi.fn() })
+
+      expect(layout?.text).toBe('Source first\nSource second')
+      expect(layout?.textFragments.map((fragment) => fragment.text)).toEqual([
+        'Source first',
+        'Source second',
+      ])
     })
 
     it('removes detected boundaries while ranges still slice the filtered page text', async () => {
@@ -848,6 +524,143 @@ describe('pdf-filter', () => {
         expect(fragment).toMatchObject({ blockOrdinal: 1, lineOrdinal: 0 })
       }
     })
+
+    it('removes only a repeated same-baseline header span and preserves body sentence units', async () => {
+      const pages: PageData[] = Array.from({ length: 3 }, (_, pageIndex) => ({
+        pageNum: pageIndex + 1,
+        pageHeight: 800,
+        items: [
+          {
+            text: 'Repeated Header.',
+            x: 0,
+            y: 790,
+            fontSize: 6,
+            hasEOL: true,
+            blockOrdinal: 0,
+            lineOrdinal: 0,
+            bbox: bbox(0, 0, 100, 12),
+          },
+          {
+            text: 'The body passage begins on the same baseline as the header',
+            x: 120,
+            y: 790,
+            fontSize: 12,
+            hasEOL: true,
+            blockOrdinal: 1,
+            lineOrdinal: 0,
+            bbox: bbox(120, 0, 360, 20),
+          },
+          {
+            text: 'and continues as one complete sentence across the next visual line.',
+            x: 120,
+            y: 760,
+            fontSize: 12,
+            hasEOL: true,
+            blockOrdinal: 1,
+            lineOrdinal: 1,
+            bbox: bbox(120, 30, 360, 50),
+          },
+          {
+            text: `Printed Page ${pageIndex + 1}.`,
+            x: 0,
+            y: 10,
+            fontSize: 6,
+            hasEOL: true,
+            blockOrdinal: 2,
+            lineOrdinal: 0,
+            bbox: bbox(0, 780, 100, 792),
+          },
+        ],
+      }))
+      const embedder: EmbedderInterface = {
+        embedBatch: async (texts) => texts.map(() => [1, 0]),
+      }
+
+      const layouts = await filterPageBoundaryLayouts(pages, embedder)
+
+      expect(layouts.map((layout) => layout.text)).toEqual(
+        Array.from(
+          { length: 3 },
+          () =>
+            'The body passage begins on the same baseline as the header and continues as one complete sentence across the next visual line.'
+        )
+      )
+      for (const layout of layouts) {
+        const units = splitIntoSentenceUnits(layout.text)
+        expect(units).toHaveLength(1)
+        expect(units[0]?.text).toBe(layout.text)
+        expect(layout.textFragments.map((fragment) => fragment.blockOrdinal)).toEqual([1, 1])
+        for (const fragment of layout.textFragments) {
+          expect(layout.text.slice(fragment.pageTextStart, fragment.pageTextEnd)).toBe(
+            fragment.text
+          )
+        }
+      }
+    })
+
+    it('joins wrapped lines into one downstream sentence unit on the unfiltered path', async () => {
+      const pages: PageData[] = [
+        {
+          pageNum: 1,
+          items: [
+            {
+              text: 'A sentence begins in one visual line and',
+              x: 40,
+              y: 700,
+              fontSize: 12,
+              hasEOL: true,
+              blockOrdinal: 1,
+              lineOrdinal: 0,
+            },
+            {
+              text: 'finishes in the next line of its native block.',
+              x: 40,
+              y: 680,
+              fontSize: 12,
+              hasEOL: true,
+              blockOrdinal: 1,
+              lineOrdinal: 1,
+            },
+          ],
+        },
+      ]
+
+      const [layout] = await filterPageBoundaryLayouts(pages, { embedBatch: vi.fn() })
+
+      expect(splitIntoSentenceUnits(layout?.text ?? '').map((unit) => unit.text)).toEqual([
+        'A sentence begins in one visual line and finishes in the next line of its native block.',
+      ])
+    })
+
+    it('preserves every page text when no patterns are detected', async () => {
+      const pages: PageData[] = ['A', 'B', 'C'].map((suffix, i) => ({
+        pageNum: i + 1,
+        items: [`Unique ${suffix}.`, `Content ${suffix}.`, `End ${suffix}.`].map((text, j) => ({
+          text,
+          x: 0,
+          y: 800 - j * 20,
+          fontSize: 12,
+          hasEOL: true,
+        })),
+      }))
+      // All dissimilar
+      const embedder: EmbedderInterface = {
+        embedBatch: vi.fn().mockResolvedValue([
+          [1, 0, 0],
+          [0, 1, 0],
+          [0, 0, 1],
+        ]),
+      }
+
+      const layouts = await filterPageBoundaryLayouts(pages, embedder, { minPages: 3 })
+
+      expect(layouts.map((layout) => layout.text)).toEqual([
+        'Unique A.\nContent A.\nEnd A.',
+        'Unique B.\nContent B.\nEnd B.',
+        'Unique C.\nContent C.\nEnd C.',
+      ])
+      expect(embedder.embedBatch).toHaveBeenCalled()
+    })
   })
 })
 
@@ -893,7 +706,7 @@ it('preserves unmatched and relocated boundaries, including an outlier inside th
   const embedder: EmbedderInterface = {
     embedBatch: vi.fn(async (texts: string[]) => texts.map(() => [1, 0])),
   }
-  const result = await filterPageBoundarySentences(pages, embedder)
+  const result = (await filterPageBoundaryLayouts(pages, embedder)).map((layout) => layout.text)
   expect(result[0]).toContain('Unique cover title.')
   expect(result[0]).toContain('Unique cover ending.')
   expect(result[3]).toContain('Unique section title.')

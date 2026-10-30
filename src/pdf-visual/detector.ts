@@ -219,9 +219,9 @@ function growCluster(
   gap: number
 ): number[] {
   const indices = [seed]
-  for (let cursor = 0; cursor < indices.length; cursor += 1) {
-    const currentIndex = indices[cursor]
-    const current = currentIndex === undefined ? undefined : rects[currentIndex]
+  // The array iterator re-reads the length, so indices pushed below are visited too.
+  for (const currentIndex of indices) {
+    const current = rects[currentIndex]
     if (current === undefined) {
       continue
     }

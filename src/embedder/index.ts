@@ -1,14 +1,27 @@
 // Embedder implementation with Transformers.js
 
+import { createHash } from 'node:crypto'
+import { type BigIntStats, createReadStream } from 'node:fs'
+import { readFile, stat } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { serialize } from 'node:v8'
 import {
+  AutoConfig,
   type DataType,
   type DeviceType,
   env,
   ModelRegistry,
+  type PretrainedConfig,
   pipeline,
 } from '@huggingface/transformers'
 import { AppError, toError } from '../utils/errors.js'
 import { isObjectLike } from '../utils/type-guards.js'
+import {
+  loadSentenceTransformersConfig,
+  type ModelPrompts,
+  resolveModelSettings,
+} from './sentence-transformers-config.js'
 
 // ============================================
 // Type Definitions
@@ -32,7 +45,17 @@ export interface EmbedderConfig {
    * distinction gates failure-path error enrichment, so keep it.
    */
   dtype?: string
+  /**
+   * Embed document chunks behind a `Title:` line naming their document
+   * (default: false). Read by ingestion, which builds the embedding input.
+   */
+  titlePrefix?: boolean
+  /** Add section paths to chunk embeddings when they fit (default: false). */
+  headingPrefix?: boolean
 }
+
+/** Selects the model's prompt; omitted means its default prompt. */
+export type EmbeddingRole = 'query' | 'document'
 
 interface IndexedEmbeddingInput {
   text: string
@@ -55,7 +78,44 @@ export interface PipelineTokenizer {
 
 interface PipelineModelConfig {
   max_position_embeddings?: unknown
+  hidden_size?: unknown
+  text_config?: unknown
 }
+
+export interface EmbeddingComputationIdentity {
+  fingerprint: string
+  dimension: number
+}
+
+interface HashedModelAsset {
+  name: string
+  sha256: string
+}
+
+interface ModelAssetSnapshotEntry {
+  name: string
+  path: string
+  statSignature: string
+}
+
+interface ModelAssetSnapshot {
+  config: PretrainedConfig
+  files: ModelAssetSnapshotEntry[]
+}
+
+interface ComputationIdentityInput {
+  loadedModel: unknown
+  device: DeviceType
+  dtype: DataType
+  tokenLimit: number | null
+  assetSnapshot: ModelAssetSnapshot | null
+  sentenceTransformersConfig: unknown
+}
+
+const EMBEDDING_IMPLEMENTATION_VERSION = 1
+const require = createRequire(import.meta.url)
+const transformersRequire = createRequire(require.resolve('@huggingface/transformers'))
+let runtimeVersionsPromise: Promise<Record<string, string> | null> | null = null
 
 /**
  * The transformers.js pipeline as this module calls it.
@@ -72,7 +132,7 @@ interface EmbeddingPipeline {
   ): Promise<{ data?: unknown; dims?: unknown } | null | undefined>
   tokenizer: PipelineTokenizer
   /** Optional: a model reporting no position window takes the tokenizer-only branch. */
-  model?: { config?: PipelineModelConfig }
+  model?: { config?: PipelineModelConfig; sessions?: unknown }
 }
 
 /** True when the loaded pipeline exposes the call and tokenizer surface used here. */
@@ -80,6 +140,56 @@ function isEmbeddingPipeline(value: unknown): value is EmbeddingPipeline {
   return (
     typeof value === 'function' && 'tokenizer' in value && typeof value.tokenizer === 'function'
   )
+}
+
+function isPretrainedConfig(value: unknown): value is PretrainedConfig {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'model_type' in value &&
+    (typeof value.model_type === 'string' || value.model_type === null) &&
+    'is_encoder_decoder' in value &&
+    typeof value.is_encoder_decoder === 'boolean' &&
+    'transformers.js_config' in value &&
+    (value['transformers.js_config'] === undefined ||
+      (typeof value['transformers.js_config'] === 'object' &&
+        value['transformers.js_config'] !== null)) &&
+    'normalized_config' in value
+  )
+}
+
+function embeddingDimension(loadedModel: EmbeddingPipeline): number | null {
+  const dimension = loadedModel.model?.config?.hidden_size ?? declaredHiddenStateWidth(loadedModel)
+  return typeof dimension === 'number' && Number.isInteger(dimension) && dimension > 0
+    ? dimension
+    : null
+}
+
+// A nested `text_config.hidden_size` can differ from the output width.
+function declaredHiddenStateWidth(loadedModel: EmbeddingPipeline): unknown {
+  const sessions = loadedModel.model?.sessions
+  const session = isObjectLike(sessions) ? sessions['model'] : undefined
+  const outputs = isObjectLike(session) ? session['outputMetadata'] : undefined
+  if (!Array.isArray(outputs)) {
+    return undefined
+  }
+  const hiddenState: unknown = outputs.find(
+    (output) => isObjectLike(output) && output['name'] === 'last_hidden_state'
+  )
+  const shape = isObjectLike(hiddenState) ? hiddenState['shape'] : undefined
+  return Array.isArray(shape) ? shape.at(-1) : undefined
+}
+
+async function statOrNull(filePath: string): Promise<BigIntStats | null> {
+  try {
+    return await stat(filePath, { bigint: true })
+  } catch {
+    return null
+  }
+}
+
+function statSignature(info: BigIntStats): string {
+  return [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(':')
 }
 
 // ============================================
@@ -112,7 +222,11 @@ function usableTokenLimit(value: unknown): number | null {
 }
 
 function readPositionWindow(candidate: EmbeddingPipeline): number | null {
-  return usableTokenLimit(candidate.model?.config?.max_position_embeddings)
+  const config = candidate.model?.config
+  // Multimodal models nest the text window under `text_config`.
+  const textConfig = config?.text_config
+  const nestedWindow = isObjectLike(textConfig) ? textConfig['max_position_embeddings'] : undefined
+  return usableTokenLimit(config?.max_position_embeddings ?? nestedWindow)
 }
 
 function resolveEffectiveCap(
@@ -264,10 +378,26 @@ export class Embedder {
    */
   private truncationWarned: boolean = false
   private degradedModeWarned: boolean = false
+  private prompts: ModelPrompts = { query: '', document: '', default: '' }
+  private warnings: string[] = []
   private readonly config: EmbedderConfig
+  private computationIdentityPromise: Promise<EmbeddingComputationIdentity | null> | null = null
 
   constructor(config: EmbedderConfig) {
     this.config = config
+  }
+
+  get headingPrefix(): boolean {
+    return this.config.headingPrefix ?? false
+  }
+
+  get titlePrefix(): boolean {
+    return this.config.titlePrefix ?? false
+  }
+
+  /** Model settings this tool cannot honor; empty until the model loads. */
+  get modelWarnings(): readonly string[] {
+    return this.warnings
   }
 
   /**
@@ -287,6 +417,7 @@ export class Embedder {
     this.initPromise = null
     this.tokenLimit = null
     this.measurementTokenizer = null
+    this.computationIdentityPromise = null
   }
 
   /**
@@ -297,6 +428,7 @@ export class Embedder {
     if (this.model) {
       return
     }
+    this.computationIdentityPromise = null
 
     // Set cache + local-model directories BEFORE creating pipeline. transformers
     // >=4.3 resolves models through env.localModelPath (its default is a path
@@ -309,23 +441,53 @@ export class Embedder {
     }
 
     // No fallback — if the requested device fails, init throws.
-    const device = this.config.device || 'cpu'
+    // The sole fp32 default literal. Both values pass through un-allowlisted
+    // (see `resolveDevice`) into a closed literal union.
+    // biome-ignore lint/nursery/noUnsafeTypeAssertion: un-allowlisted passthrough to a closed literal union
+    const device = (this.config.device || 'cpu') as DeviceType
+    // biome-ignore lint/nursery/noUnsafeTypeAssertion: un-allowlisted passthrough to a closed literal union
+    const dtype = (this.config.dtype ?? 'fp32') as DataType
 
     console.error(`Embedder: Setting cache directory to "${this.config.cacheDir}"`)
+
+    // Resolved before the pipeline: once `this.model` is set, `ensureInitialized`
+    // lets callers through, so no await may follow that assignment.
+    const sentenceTransformersConfig = await loadSentenceTransformersConfig(
+      this.config.modelPath,
+      this.config.cacheDir,
+      { dtype, device }
+    )
+    const settings = resolveModelSettings(this.config.modelPath, sentenceTransformersConfig)
+    for (const warning of settings.warnings) {
+      console.error(`Embedder: ${warning}`)
+    }
+    this.prompts = settings.prompts
+    this.warnings = settings.warnings
+
     console.error(`Embedder: Loading model "${this.config.modelPath}" on device "${device}"...`)
 
     try {
-      this.model = await pipeline('feature-extraction', this.config.modelPath, {
-        // The sole fp32 default literal. Both values pass through
-        // un-allowlisted (see `resolveDevice`) into a closed literal union.
-        // biome-ignore lint/nursery/noUnsafeTypeAssertion: un-allowlisted passthrough to a closed literal union
-        dtype: (this.config.dtype ?? 'fp32') as DataType,
-        // biome-ignore lint/nursery/noUnsafeTypeAssertion: un-allowlisted passthrough to a closed literal union
-        device: device as DeviceType,
-      })
-      const clamp = installTokenLimitClamp(this.model)
+      // Capture local asset names and file signatures before the pipeline can
+      // load them. Later content hashes are trusted only while these exact
+      // files remain unchanged, so a disk update during model loading cannot
+      // assign the new asset identity to an older in-memory pipeline.
+      const assetSnapshot = await this.captureModelAssetSnapshot(dtype, device)
+      this.model = await pipeline('feature-extraction', this.config.modelPath, { dtype, device })
+      const loadedModel = this.model
+      const clamp = installTokenLimitClamp(loadedModel)
       this.tokenLimit = clamp.tokenLimit
       this.measurementTokenizer = clamp.measurementTokenizer
+      // Start asset hashing against the initialized pipeline while parsing and
+      // token measurement proceed. The promise is retained with this model and
+      // is cleared only when the pipeline is disposed.
+      this.computationIdentityPromise = this.createComputationIdentity({
+        loadedModel,
+        device,
+        dtype,
+        tokenLimit: clamp.tokenLimit,
+        assetSnapshot,
+        sentenceTransformersConfig,
+      })
       console.error(`Embedder: Model loaded successfully (device=${device})`)
     } catch (error) {
       const nativeError = toError(error)
@@ -398,6 +560,184 @@ export class Embedder {
     await this.initPromise
   }
 
+  /** Identity of the loaded embedding function, or `null` when local assets cannot be proven. */
+  async getComputationIdentity(): Promise<EmbeddingComputationIdentity | null> {
+    await this.ensureInitialized()
+    if (this.computationIdentityPromise === null) {
+      return null
+    }
+    return await this.computationIdentityPromise
+  }
+
+  private async createComputationIdentity({
+    loadedModel,
+    device,
+    dtype,
+    tokenLimit,
+    assetSnapshot,
+    sentenceTransformersConfig,
+  }: ComputationIdentityInput): Promise<EmbeddingComputationIdentity | null> {
+    try {
+      if (!isEmbeddingPipeline(loadedModel)) {
+        return null
+      }
+      const dimensionValue = embeddingDimension(loadedModel)
+      if (dimensionValue === null) {
+        return null
+      }
+
+      const loadedConfig = loadedModel.model?.config
+      if (
+        !assetSnapshot ||
+        !isPretrainedConfig(loadedConfig) ||
+        JSON.stringify(assetSnapshot.config) !== JSON.stringify(loadedConfig)
+      ) {
+        return null
+      }
+
+      const assets = await this.hashModelAssets(assetSnapshot)
+      if (!assets) {
+        return null
+      }
+      assets.push({
+        name: 'config_sentence_transformers.json',
+        sha256: createHash('sha256').update(serialize(sentenceTransformersConfig)).digest('hex'),
+      })
+
+      const runtimeVersions = await getRuntimeVersions()
+      if (runtimeVersions === null) {
+        return null
+      }
+      const fingerprintInput = {
+        implementationVersion: EMBEDDING_IMPLEMENTATION_VERSION,
+        assets,
+        runtimeVersions,
+        nodeVersion: process.versions.node,
+        transformersVersion: env.version,
+        modelPath: this.config.modelPath,
+        device,
+        dtype,
+        prompts: this.prompts,
+        tokenLimit,
+        pooling: 'mean',
+        normalize: true,
+        titlePrefix: this.titlePrefix,
+        headingPrefix: this.headingPrefix,
+        dimension: dimensionValue,
+      }
+      const fingerprint = createHash('sha256').update(serialize(fingerprintInput)).digest('hex')
+      return { fingerprint, dimension: dimensionValue }
+    } catch {
+      // Identity is optional acceleration metadata. A failure to enumerate or
+      // hash local assets must never prevent normal embedding inference.
+      return null
+    }
+  }
+
+  private async hashModelAssets(snapshot: ModelAssetSnapshot): Promise<HashedModelAsset[] | null> {
+    const assets: HashedModelAsset[] = []
+    for (const file of snapshot.files) {
+      const beforeHash = await statOrNull(file.path)
+      if (!beforeHash?.isFile() || statSignature(beforeHash) !== file.statSignature) {
+        return null
+      }
+      const sha256 = await hashFile(file.path)
+      const afterHash = await statOrNull(file.path)
+      if (!afterHash?.isFile() || statSignature(afterHash) !== file.statSignature) {
+        return null
+      }
+      assets.push({ name: file.name, sha256 })
+    }
+    return assets
+  }
+
+  private async captureModelAssetSnapshot(
+    dtype: DataType,
+    device: DeviceType
+  ): Promise<ModelAssetSnapshot | null> {
+    try {
+      const tokenizerConfigPath = await this.resolveAssetPath('tokenizer_config.json')
+      if (
+        !tokenizerConfigPath ||
+        env.cacheDir === null ||
+        resolve(env.cacheDir) !== resolve(this.config.cacheDir)
+      ) {
+        // Transformers.js 4.3.1 probes tokenizer_config.json while listing
+        // pipeline assets. Require it locally before enumeration so identity
+        // discovery cannot cause a separate Hub metadata lookup.
+        return null
+      }
+
+      const config = await AutoConfig.from_pretrained(this.config.modelPath, {
+        cache_dir: this.config.cacheDir,
+        local_files_only: true,
+      })
+      if (!isPretrainedConfig(config)) {
+        return null
+      }
+      const fileNames = await ModelRegistry.get_pipeline_files(
+        'feature-extraction',
+        this.config.modelPath,
+        { config, dtype, device }
+      )
+      // Some models list it although the pipeline never loads it, and it does
+      // not affect embeddings.
+      const assetNames = fileNames.filter((name) => name !== 'generation_config.json')
+      const files: ModelAssetSnapshotEntry[] = []
+      for (const name of [...new Set(assetNames)].sort()) {
+        const path = await this.resolveAssetPath(name)
+        const info = path ? await statOrNull(path) : null
+        if (!path || !info?.isFile()) {
+          return null
+        }
+        files.push({ name, path, statSignature: statSignature(info) })
+      }
+      return files.length === 0 ? null : { config, files }
+    } catch {
+      // Local identity is optional; a missing cached asset or config mismatch
+      // disables reuse without changing normal pipeline initialization.
+      return null
+    }
+  }
+
+  private async resolveAssetPath(name: string): Promise<string | null> {
+    const normalizedName = name.replaceAll('\\', '/')
+    if (
+      isAbsolute(name) ||
+      normalizedName.startsWith('/') ||
+      normalizedName.split('/').some((part) => part === '..')
+    ) {
+      return null
+    }
+    const modelPath = this.config.modelPath
+    const cachePath = join(this.config.cacheDir, modelPath, name)
+    const directModelPath = resolve(modelPath, name)
+    const localModelPath = join(env.localModelPath, modelPath, name)
+    const modelId = /^[^./:\\]+\/[^./\\]+$/.test(modelPath)
+    let candidates: string[]
+    if (isAbsolute(modelPath)) {
+      candidates = [directModelPath]
+    } else if (modelId) {
+      candidates = [localModelPath, cachePath]
+    } else {
+      candidates = [directModelPath, cachePath]
+    }
+    const available: { path: string; identity: string }[] = []
+    for (const candidate of candidates) {
+      const info = await statOrNull(candidate)
+      if (info?.isFile()) {
+        available.push({ path: candidate, identity: `${info.dev}:${info.ino}` })
+      }
+    }
+    if (new Set(available.map(({ identity }) => identity)).size > 1) {
+      // A model may resolve from multiple local/cache candidates. If they
+      // contain different files, this resolver cannot prove which one the
+      // pipeline loaded, so persistent reuse is unsafe for this instance.
+      return null
+    }
+    return available[0]?.path ?? null
+  }
+
   /**
    * The effective token cap, or `null` when none could be resolved.
    *
@@ -434,7 +774,7 @@ export class Embedder {
    */
   private async planTokenLengths(texts: string[]): Promise<number[]> {
     const tokenLimit = await this.getTokenLimit()
-    const trueLengths = await this.countTokens(texts)
+    const trueLengths = await this.measureTokens(texts)
     if (tokenLimit === null) {
       return trueLengths
     }
@@ -453,15 +793,32 @@ export class Embedder {
   }
 
   /**
-   * The true token length of each text, in input order. Tokenization only, no
-   * inference.
+   * The true token length of each text as embedded for `role`, prompt
+   * included, in input order. Tokenization only, no inference.
    *
    * Measured with `truncation: false` through the pre-clamp tokenizer, so a
    * length above {@link getTokenLimit} means inference will truncate. Throws
    * when no such tokenizer was captured, rather than returning a length
    * measured through an unknown surface.
    */
-  async countTokens(texts: string[]): Promise<number[]> {
+  async countTokens(texts: string[], role?: EmbeddingRole): Promise<number[]> {
+    await this.ensureInitialized()
+    return this.measureTokens(this.withPrompt(texts, role))
+  }
+
+  /** The prompt this model's config sets for documents, or `''`. */
+  async getDocumentPrompt(): Promise<string> {
+    await this.ensureInitialized()
+    return this.prompts.document
+  }
+
+  private withPrompt(texts: string[], role: EmbeddingRole | undefined): string[] {
+    const prompt = this.prompts[role ?? 'default']
+    return prompt === '' ? texts : texts.map((text) => prompt + text)
+  }
+
+  /** Measures `texts` as given; each caller applies the prompt exactly once. */
+  private async measureTokens(texts: string[]): Promise<number[]> {
     if (texts.length === 0) {
       return []
     }
@@ -487,8 +844,8 @@ export class Embedder {
    * Delegates to {@link embedBatch} so this path shares its clamp, measurement
    * and warning rather than reaching the pipeline unguarded.
    */
-  async embed(text: string): Promise<number[]> {
-    const embeddings = await this.embedBatch([text])
+  async embed(text: string, role?: EmbeddingRole): Promise<number[]> {
+    const embeddings = await this.embedBatch([text], role)
     const embedding = embeddings[0]
     if (embedding === undefined) {
       throw new EmbeddingError('Missing embedder batch output row')
@@ -497,7 +854,7 @@ export class Embedder {
   }
 
   /** Batched embedding; the vector dimension depends on the model. */
-  async embedBatch(texts: string[]): Promise<number[][]> {
+  async embedBatch(texts: string[], role?: EmbeddingRole): Promise<number[][]> {
     // Nothing to embed → skip model init entirely.
     if (texts.length === 0) {
       return []
@@ -521,10 +878,11 @@ export class Embedder {
         throw new EmbeddingError('Embedder pipeline is not callable')
       }
       const modelCall = this.model
+      const promptedTexts = this.withPrompt(texts, role)
       // One measurement per call, so planning and truncation reporting cannot
       // disagree about a length.
-      const plannedLengths = await this.planTokenLengths(texts)
-      const embeddings: (number[] | undefined)[] = Array.from({ length: texts.length })
+      const plannedLengths = await this.planTokenLengths(promptedTexts)
+      const embeddings: (number[] | undefined)[] = Array.from({ length: promptedTexts.length })
       const deferred: IndexedEmbeddingInput[] = []
 
       const embedInputs = async (inputs: IndexedEmbeddingInput[]): Promise<void> => {
@@ -552,8 +910,8 @@ export class Embedder {
         }
       }
 
-      for (let i = 0; i < texts.length; i += this.config.batchSize) {
-        const batchTexts = texts.slice(i, i + this.config.batchSize)
+      for (let i = 0; i < promptedTexts.length; i += this.config.batchSize) {
+        const batchTexts = promptedTexts.slice(i, i + this.config.batchSize)
         const indexedInputs = batchTexts.map((text, batchIndex) => {
           const originalIndex = i + batchIndex
           const tokenLength = plannedLengths[originalIndex]
@@ -586,5 +944,77 @@ export class Embedder {
         cause: toError(error),
       })
     }
+  }
+}
+
+async function hashFile(filePath: string): Promise<string> {
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk)
+  }
+  return hash.digest('hex')
+}
+
+async function getRuntimeVersions(): Promise<Record<string, string> | null> {
+  if (runtimeVersionsPromise === null) {
+    runtimeVersionsPromise = Promise.all(
+      [
+        '@huggingface/transformers',
+        '@huggingface/tokenizers',
+        'onnxruntime-node',
+        'onnxruntime-web',
+      ].map(
+        async (packageName) =>
+          [packageName, await readInstalledPackageVersion(packageName)] as const
+      )
+    ).then((entries) => {
+      const versions: Record<string, string> = {}
+      for (const [name, version] of entries) {
+        if (version === null) {
+          return null
+        }
+        versions[name] = version
+      }
+      return versions
+    })
+  }
+  return await runtimeVersionsPromise
+}
+
+async function readInstalledPackageVersion(packageName: string): Promise<string | null> {
+  try {
+    let packageEntry: string
+    try {
+      packageEntry = require.resolve(packageName)
+    } catch {
+      // pnpm keeps some dependencies private to the Transformers.js package.
+      packageEntry = transformersRequire.resolve(packageName)
+    }
+    for (
+      let directory = dirname(packageEntry);
+      directory !== dirname(directory);
+      directory = dirname(directory)
+    ) {
+      try {
+        const metadata: unknown = JSON.parse(
+          await readFile(join(directory, 'package.json'), 'utf8')
+        )
+        if (
+          typeof metadata === 'object' &&
+          metadata !== null &&
+          'name' in metadata &&
+          metadata.name === packageName &&
+          'version' in metadata &&
+          typeof metadata.version === 'string'
+        ) {
+          return metadata.version
+        }
+      } catch {
+        // Continue toward the package root.
+      }
+    }
+    return null
+  } catch {
+    return null
   }
 }

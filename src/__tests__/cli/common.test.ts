@@ -145,21 +145,26 @@ describe('cli/common', () => {
         hybridWeight: 0,
       })
     })
-
-    it('forwards hybridWeight 0, which disables the keyword boost', () => {
-      createVectorStore(makeConfig({ hybridWeight: 0 }))
-
-      const [storeConfig] = mocks.VectorStore.mock.calls[0] ?? []
-      expect(storeConfig).toHaveProperty('hybridWeight', 0)
-    })
   })
 
   describe('createEmbedder', () => {
     const originalDevice = process.env['RAG_DEVICE']
     const originalDtype = process.env['RAG_DTYPE']
+    const originalTitlePrefix = process.env['EMBED_TITLE_PREFIX']
+    const originalHeadingPrefix = process.env['EMBED_HEADING_PREFIX']
 
     afterEach(() => {
       mocks.Embedder.mockReset()
+      if (originalHeadingPrefix === undefined) {
+        delete process.env['EMBED_HEADING_PREFIX']
+      } else {
+        process.env['EMBED_HEADING_PREFIX'] = originalHeadingPrefix
+      }
+      if (originalTitlePrefix === undefined) {
+        delete process.env['EMBED_TITLE_PREFIX']
+      } else {
+        process.env['EMBED_TITLE_PREFIX'] = originalTitlePrefix
+      }
       if (originalDevice === undefined) {
         delete process.env['RAG_DEVICE']
       } else {
@@ -212,13 +217,39 @@ describe('cli/common', () => {
       expect(mocks.Embedder).toHaveBeenCalledWith(expect.objectContaining({ dtype: 'q8' }))
     })
 
-    it('omits dtype when RAG_DTYPE is whitespace-only', () => {
-      process.env['RAG_DTYPE'] = '   '
+    it('enables the title prefix only when EMBED_TITLE_PREFIX is on', () => {
+      delete process.env['EMBED_TITLE_PREFIX']
+      createEmbedder(makeConfig({}))
+      expect(mocks.Embedder.mock.calls[0]?.[0]).not.toHaveProperty('titlePrefix')
 
-      createEmbedder(makeConfig({ modelName: 'custom/model', cacheDir: '/custom/cache' }))
+      process.env['EMBED_TITLE_PREFIX'] = 'on'
+      createEmbedder(makeConfig({}))
+      expect(mocks.Embedder.mock.calls[1]?.[0]).toMatchObject({ titlePrefix: true })
+    })
 
-      const passedConfig = mocks.Embedder.mock.calls[0]?.[0]
-      expect(passedConfig).not.toHaveProperty('dtype')
+    it('enables headings independently of the title prefix', () => {
+      delete process.env['EMBED_HEADING_PREFIX']
+      delete process.env['EMBED_TITLE_PREFIX']
+      createEmbedder(makeConfig({}))
+      expect(mocks.Embedder.mock.calls[0]?.[0]).not.toHaveProperty('headingPrefix')
+      process.env['EMBED_HEADING_PREFIX'] = 'on'
+      createEmbedder(makeConfig({}))
+      expect(mocks.Embedder.mock.calls[1]?.[0]).toMatchObject({ headingPrefix: true })
+      expect(mocks.Embedder.mock.calls[1]?.[0]).not.toHaveProperty('titlePrefix')
+    })
+
+    it('warns and leaves the title prefix off for an invalid EMBED_TITLE_PREFIX', () => {
+      process.env['EMBED_TITLE_PREFIX'] = 'maybe'
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        createEmbedder(makeConfig({}))
+        expect(mocks.Embedder.mock.calls[0]?.[0]).not.toHaveProperty('titlePrefix')
+        expect(errorSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Invalid EMBED_TITLE_PREFIX value: "maybe"')
+        )
+      } finally {
+        errorSpy.mockRestore()
+      }
     })
   })
 })

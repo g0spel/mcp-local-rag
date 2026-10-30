@@ -1,6 +1,9 @@
 // CLI Delete Tests
 // Tests runDelete functionality with mocked dependencies
 
+import { existsSync } from 'node:fs'
+import { unlink as actualUnlink } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // ============================================
@@ -48,6 +51,7 @@ const MOCKED_PATHS = ['../../cli/common.js', 'node:fs/promises'] as const
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { embeddingSnapshotPath } from '../../embedder/embedding-snapshot.js'
 import { expectError, expectString } from '../test-doubles.js'
 import { formatCliErrorShim } from './cli-error-shim.js'
 
@@ -230,6 +234,19 @@ describe('CLI delete', () => {
     expect(parsed.existed).toBe(true)
   })
 
+  it('removes the matching embedding snapshot after the DB delete succeeds', async () => {
+    const filePath = resolve('./tmp/test-cli-delete-snapshot.md')
+    const snapshotPath = embeddingSnapshotPath(cleanupDbPath, filePath)
+    await mkdir(dirname(snapshotPath), { recursive: true })
+    await writeFile(snapshotPath, 'previous document snapshot')
+    mocks.unlink.mockImplementationOnce(async (path: string) => await actualUnlink(path))
+
+    const { error } = await captureStderr(() => runDelete([filePath], { dbPath: cleanupDbPath }))
+
+    expect(error).toBeUndefined()
+    expect(existsSync(snapshotPath)).toBe(false)
+  })
+
   it('should report existed=true when only raw-data meta exists', async () => {
     const { generateMetaJsonPath, generateRawDataPath } = await import(
       '../../utils/raw-data-utils.js'
@@ -295,11 +312,12 @@ describe('CLI delete', () => {
 
     expect(error).toBeUndefined()
 
-    // unlink should be called twice: once for .md, once for .meta.json
-    expect(mocks.unlink).toHaveBeenCalledTimes(2)
+    // Snapshot deletion and raw-data artifact cleanup each use unlink.
+    expect(mocks.unlink).toHaveBeenCalledTimes(3)
     const unlinkCalls = mocks.unlink.mock.calls.map((c: unknown[]) => expectString(c[0]))
     expect(unlinkCalls.some((p: string) => p.endsWith('.md'))).toBe(true)
     expect(unlinkCalls.some((p: string) => p.endsWith('.meta.json'))).toBe(true)
+    expect(unlinkCalls).toContain(embeddingSnapshotPath(cleanupDbPath, mdPath))
 
     const writtenData = expectString(stdoutSpy.mock.calls[0]?.[0])
     const parsed = JSON.parse(writtenData)
@@ -312,8 +330,11 @@ describe('CLI delete', () => {
 
     expect(error).toBeUndefined()
 
-    // unlink should NOT be called for non-raw-data paths
-    expect(mocks.unlink).not.toHaveBeenCalled()
+    // Ordinary file deletion removes only the snapshot; there are no raw-data artifacts.
+    expect(mocks.unlink).toHaveBeenCalledTimes(1)
+    expect(mocks.unlink).toHaveBeenCalledWith(
+      embeddingSnapshotPath('lancedb', resolve('/regular/file.md'))
+    )
   })
 
   // --------------------------------------------
@@ -339,37 +360,33 @@ describe('CLI delete', () => {
     expect(parsed.deleted).toBe(true)
     expect(parsed.removedChunks).toBe(0)
     expect(parsed.existed).toBe(false)
-  })
 
-  it('should attempt .meta.json cleanup even when the .md file is already missing', async () => {
-    mocks.deleteChunks.mockResolvedValue(0)
-    const enoentError = Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
-    mocks.unlink.mockRejectedValue(enoentError)
-
-    await captureStderr(() => runDelete(['--source', 'https://example.com/missing']))
-
-    expect(mocks.unlink).toHaveBeenCalledTimes(2)
+    // .meta.json and snapshot cleanup are still attempted although the .md file is missing
+    expect(mocks.unlink).toHaveBeenCalledTimes(3)
     const paths = mocks.unlink.mock.calls.map((c: unknown[]) => expectString(c[0]))
     expect(paths.some((p: string) => p.endsWith('.md'))).toBe(true)
     expect(paths.some((p: string) => p.endsWith('.meta.json'))).toBe(true)
+    expect(paths).toContain(
+      embeddingSnapshotPath('lancedb', expectString(mocks.deleteChunks.mock.calls[0]?.[0]))
+    )
   })
 
   // --------------------------------------------
   // Path validation for file path argument
   // --------------------------------------------
-  it('should reject sensitive system paths for file-path argument', async () => {
-    // Sensitive path prefixes (/etc, /usr, etc.) are Unix-specific.
-    // On Windows, resolve('/etc/passwd') produces a drive-letter path
-    // (e.g. D:\etc\passwd) which doesn't match the Unix prefix check.
-    if (process.platform === 'win32') {
-      return
-    }
-    const { output, error } = await captureStderr(() => runDelete(['/etc/passwd']))
+  // Sensitive path prefixes (/etc, /usr, etc.) are Unix-specific.
+  // On Windows, resolve('/etc/passwd') produces a drive-letter path
+  // (e.g. D:\etc\passwd) which doesn't match the Unix prefix check.
+  it.skipIf(process.platform === 'win32')(
+    'should reject sensitive system paths for file-path argument',
+    async () => {
+      const { output, error } = await captureStderr(() => runDelete(['/etc/passwd']))
 
-    expect(error).toBeUndefined()
-    expect(process.exitCode).toBe(1)
-    expect(output.join('\n')).toContain('Refusing to use sensitive system path')
-  })
+      expect(error).toBeUndefined()
+      expect(process.exitCode).toBe(1)
+      expect(output.join('\n')).toContain('Refusing to use sensitive system path')
+    }
+  )
 
   // --------------------------------------------
   // Unknown flags cause exit(1)

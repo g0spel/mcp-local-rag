@@ -12,9 +12,9 @@
 // which is the same signal an MCP client has.
 
 import { createHash } from 'node:crypto'
-import { mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { chmod, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
-import { join, resolve, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   testEmbeddingServerUrl,
@@ -22,6 +22,7 @@ import {
   withTestDevice,
 } from '../../__tests__/test-device.js'
 import { parseJson, privateMembers } from '../../__tests__/test-doubles.js'
+import { embeddingSnapshotPath } from '../../embedder/embedding-snapshot.js'
 import type { Embedder } from '../../embedder/index.js'
 import { isRecord } from '../../utils/type-guards.js'
 import type { SyncStatusResult } from '../types.js'
@@ -184,7 +185,6 @@ async function seedRows(
           sourceEnd: index * 10 + 8,
         })),
         embeddings: Array.from({ length: chunkCount }, (_, index) => unitVector(index + 1)),
-        fileSize: 64,
         fileTitle: null,
         contentHash,
       })
@@ -224,7 +224,10 @@ async function storedPaths(fixture: Fixture): Promise<string[]> {
  * external ~90MB download and is non-deterministic across devices, while row,
  * path, and job-state correctness is what these tests are about.
  */
-async function makeServer(fixture: Fixture): Promise<ServerInstance> {
+async function makeServer(
+  fixture: Fixture,
+  ignorePatterns: string[] = []
+): Promise<ServerInstance> {
   const remoteUrl = testEmbeddingServerUrl()
   const server = new RAGServer(
     withTestDevice({
@@ -237,9 +240,12 @@ async function makeServer(fixture: Fixture): Promise<ServerInstance> {
       ...(remoteUrl === undefined ? {} : { embeddingServerUrl: remoteUrl }),
       baseDirs: fixture.roots,
       maxFileSize: 100 * 1024 * 1024,
+      ignorePatterns,
     })
   )
   const embedder = privateMembers<{ embedder: Embedder }>(server).embedder
+  vi.spyOn(embedder, 'getTokenLimit').mockResolvedValue(null)
+  vi.spyOn(embedder, 'getComputationIdentity').mockResolvedValue(null)
   vi.spyOn(embedder, 'embedBatch').mockImplementation(async (texts: string[]) => {
     if (texts.some((text) => text.includes(FAIL_MARKER))) {
       throw new Error('induced embedding failure')
@@ -439,6 +445,9 @@ describe('MCP sync tools', () => {
     await seedRows(fixture, changedPath, sha256('a previous revision'))
     await seedRows(fixture, unchangedPath, sha256(unchangedContent))
     await seedRows(fixture, gonePath, sha256('deleted from disk'))
+    const goneSnapshot = embeddingSnapshotPath(fixture.dbPath, gonePath)
+    await mkdir(dirname(goneSnapshot), { recursive: true })
+    writeFileSync(goneSnapshot, 'previous document snapshot')
 
     const server = await makeServer(fixture)
     try {
@@ -475,6 +484,7 @@ describe('MCP sync tools', () => {
     ).toEqual(new Set([sha256(changedContent)]))
     expect(manifest.filter((row) => row.filePath === emptyPath)).toEqual([])
     expect(manifest.filter((row) => row.filePath === gonePath)).toEqual([])
+    expect(existsSync(goneSnapshot)).toBe(false)
   }, 60000)
 
   // --------------------------------------------
@@ -490,6 +500,9 @@ describe('MCP sync tools', () => {
     )
     const gonePath = join(rootDir, 'gone.md')
     await seedRows(fixture, gonePath, sha256('deleted from disk'))
+    const goneSnapshot = embeddingSnapshotPath(fixture.dbPath, gonePath)
+    await mkdir(dirname(goneSnapshot), { recursive: true })
+    writeFileSync(goneSnapshot, 'previous document snapshot')
 
     const server = await makeServer(fixture)
     let terminal: SyncStatusResult
@@ -509,6 +522,7 @@ describe('MCP sync tools', () => {
     // The first error stops the run before the prune phase: the row for the
     // file that left the disk survives.
     expect(await storedPaths(fixture)).toEqual([gonePath])
+    expect(existsSync(goneSnapshot)).toBe(true)
   }, 45000)
 
   // --------------------------------------------
@@ -663,7 +677,9 @@ describe('MCP sync tools', () => {
     expect(scanArgs).toEqual(
       fixture.roots.map((root) => [
         root,
-        [`${resolve(fixture.dbPath)}${sep}`, `${resolve(fixture.cacheDir)}${sep}`],
+        expect.objectContaining({
+          prefixes: [`${resolve(fixture.dbPath)}${sep}`, `${resolve(fixture.cacheDir)}${sep}`],
+        }),
         { maxDepth: MAX_SCAN_DEPTH },
       ])
     )
@@ -679,6 +695,32 @@ describe('MCP sync tools', () => {
     expect(
       terminal.warnings.some((warning) => warning.includes(deepDir.slice(TMP_ROOT.length)))
     ).toBe(true)
+  }, 45000)
+
+  it('removes an indexed file that now matches IGNORE_PATHS and never ingests one', async () => {
+    const fixture = await makeFixture('ignore-paths')
+    const root = fixture.roots[0] ?? ''
+    const keptPath = await writeFixtureFile(
+      join(root, 'notes', 'kept.md'),
+      `kept ${'a'.repeat(200)}`
+    )
+    const indexedContent = `indexed before the pattern ${'b'.repeat(200)}`
+    const indexedPath = await writeFixtureFile(join(root, 'plugs', 'indexed.md'), indexedContent)
+    await writeFixtureFile(join(root, 'plugs', 'new.md'), `never indexed ${'c'.repeat(200)}`)
+    await seedRows(fixture, indexedPath, sha256(indexedContent))
+
+    const server = await makeServer(fixture, ['plugs/**'])
+    let terminal: SyncStatusResult
+    try {
+      const jobId = await syncStart(server)
+      terminal = lastSnapshot(await pollUntilTerminal(server, jobId))
+    } finally {
+      await server.close()
+    }
+
+    expect(terminal.state).toBe('succeeded')
+    expect(terminal.summary).toEqual({ upserted: 1, skipped: 0, empty: 0, pruned: 1 })
+    expect(await storedPaths(fixture)).toEqual([keptPath])
   }, 45000)
 
   // --------------------------------------------

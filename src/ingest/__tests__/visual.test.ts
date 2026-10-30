@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { expectDefined } from '../../__tests__/test-doubles.js'
 import type { ProcessedVisualRegion } from '../../pdf-visual/types.js'
+import { sourceContextForRange } from '../../utils/source-context.js'
 import { buildOrderedVisualDocument, type OrderedVisualPage } from '../visual.js'
 
 const page: OrderedVisualPage = {
@@ -70,5 +71,24 @@ describe('buildOrderedVisualDocument', () => {
     expect(result.regions[0]?.anchorOffset).toBeLessThanOrEqual(
       expectDefined(result.regions[1]).anchorOffset
     )
+  })
+})
+
+it('rebases headings and page ranges after captions and empty pages', () => {
+  const result = buildOrderedVisualDocument(
+    [
+      { ...page, headings: [{ offset: 13, level: 1, text: 'After text.' }] },
+      { pageNum: 2, text: '', textFragments: [] },
+      { pageNum: 3, text: 'Last page.', textFragments: [] },
+    ],
+    [region('Diagram.')]
+  )
+  const start = result.text.indexOf('After text.')
+  const map = expectDefined(result.sourceMap)
+  expect(map.headings[0]?.offset).toBe(start)
+  expect(sourceContextForRange(map, start, result.text.length)).toEqual({
+    startPage: 1,
+    endPage: 3,
+    headingPaths: [['After text.']],
   })
 })
