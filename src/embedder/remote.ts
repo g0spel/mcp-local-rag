@@ -7,7 +7,8 @@
 //
 // Wire protocol: POST {serverUrl}/embed  {"inputs": string[]} → number[][]
 // (TEI-native shape; the server owns model choice, dtype, and truncation).
-
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { AppError } from '../utils/errors.js'
 import type { EmbeddingComputationIdentity } from './index.js'
 
@@ -105,6 +106,69 @@ async function withTimeout<T>(
   } finally {
     clearTimeout(timer)
   }
+}
+
+// ============================================
+// One-shot HTTP transport (dedicated connection)
+// ============================================
+
+/**
+ * Single-request HTTP(S) transport over a dedicated connection (`agent:
+ * false`): the socket is created per request and closed when the response
+ * completes.
+ *
+ * Why not `fetch`: undici classifies `Connection` as a forbidden header and
+ * silently strips it, so the earlier `Connection: 'close'` header never
+ * disabled keep-alive — pooled idle sockets stayed open for hours across the
+ * ssh-forwarded tunnel and accumulated into a deadlock (one ssh channel per
+ * pooled socket). A dedicated per-request connection cannot pool, so idle
+ * channel accumulation is structurally impossible.
+ */
+function rawRequest(
+  url: URL,
+  init: { method: 'GET' | 'POST'; body?: string; signal: AbortSignal }
+): Promise<{ status: number; text: string }> {
+  const send = url.protocol === 'https:' ? httpsRequest : httpRequest
+  return new Promise((resolve, reject) => {
+    if (init.signal.aborted) {
+      reject(abortError())
+      return
+    }
+    const req = send(
+      url,
+      {
+        method: init.method,
+        agent: false,
+        headers: init.body === undefined ? {} : { 'Content-Type': 'application/json' },
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('error', reject)
+        res.on('end', () => {
+          resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') })
+        })
+      }
+    )
+    req.on('error', reject)
+    init.signal.addEventListener(
+      'abort',
+      () => {
+        req.destroy()
+        reject(abortError())
+      },
+      { once: true }
+    )
+    if (init.body !== undefined) {
+      req.write(init.body)
+    }
+    req.end()
+  })
+}
+
+/** Timeout-shaped abort error (retryable, matching the previous fetch behavior). */
+function abortError(): Error {
+  return Object.assign(new Error('aborted'), { name: 'AbortError' })
 }
 
 // ============================================
@@ -206,14 +270,14 @@ export class RemoteEmbedder {
     let info: unknown
     try {
       info = await withTimeout(async (signal) => {
-        const res = await fetch(`${this.config.serverUrl}/info`, {
+        const res = await rawRequest(new URL(`${this.config.serverUrl}/info`), {
+          method: 'GET',
           signal,
-          headers: { Connection: 'close' },
         })
-        if (!res.ok) {
+        if (res.status < 200 || res.status >= 300) {
           return null
         }
-        return await res.json()
+        return JSON.parse(res.text)
       }, 10_000)
     } catch {
       return none
@@ -327,29 +391,20 @@ export class RemoteEmbedder {
 
   private async postEmbed(inputs: string[]): Promise<number[][]> {
     return withTimeout(async (signal) => {
-      const res = await fetch(`${this.config.serverUrl}/embed`, {
+      const res = await rawRequest(new URL(`${this.config.serverUrl}/embed`), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          // Keep-alive reuse across batches races with the frp-relayed tunnel
-          // (connection state dropped between requests -> ECONNRESET). A fresh
-          // connection per batch costs one handshake and sidesteps it entirely.
-          Connection: 'close',
-        },
         body: JSON.stringify({ inputs }),
         signal,
       })
-      if (!res.ok) {
-        const body = await res.text().catch(() => '')
+      if (res.status < 200 || res.status >= 300) {
         if (isRetryableStatus(res.status)) {
-          throw new RemoteEmbeddingRetryableError(res.status, body, this.config.serverUrl)
+          throw new RemoteEmbeddingRetryableError(res.status, res.text, this.config.serverUrl)
         }
         throw new RemoteEmbeddingError(
-          `HTTP ${res.status} from embedding server ${this.config.serverUrl}${body ? `: ${body.slice(0, 200)}` : ''}`
+          `HTTP ${res.status} from embedding server ${this.config.serverUrl}${res.text ? `: ${res.text.slice(0, 200)}` : ''}`
         )
       }
-      const vectors: number[][] = await res.json()
-      return vectors
+      return JSON.parse(res.text)
     }, this.config.timeoutMs ?? 30_000)
   }
 }
