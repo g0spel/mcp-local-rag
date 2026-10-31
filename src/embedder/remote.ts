@@ -117,12 +117,15 @@ async function withTimeout<T>(
  * false`): the socket is created per request and closed when the response
  * completes.
  *
- * Why not `fetch`: undici classifies `Connection` as a forbidden header and
- * silently strips it, so the earlier `Connection: 'close'` header never
- * disabled keep-alive — pooled idle sockets stayed open for hours across the
- * ssh-forwarded tunnel and accumulated into a deadlock (one ssh channel per
- * pooled socket). A dedicated per-request connection cannot pool, so idle
- * channel accumulation is structurally impossible.
+ * Why not `fetch`: during a tunnel wedge, undici's pooled sockets lingered in
+ * mixed half-closed/hung states (18 idle + in-flight sockets observed pinned
+ * to one ssh-forwarded tunnel connection, one ssh channel each), and the
+ * pool's reconnect burst after a tunnel restart slowed recovery. A dedicated
+ * per-request connection binds the socket's lifetime exactly to the request:
+ * no pooled residue, no reconnect storm, nothing left to wedge.
+ * (The earlier `Connection: 'close'` header did reach the server — verified
+ * with a raw-socket probe — but it only governs the server side; undici still
+ * owns and retains the local end in its pool.)
  */
 function rawRequest(
   url: URL,

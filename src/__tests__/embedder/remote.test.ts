@@ -37,6 +37,8 @@ type Handler = (
 interface Stub {
   url: string
   requests: StubRequest[]
+  reset: () => void
+  onSocketClose: (cb: () => void) => void
   setHandler: (handler: Handler) => void
   close: () => Promise<void>
 }
@@ -47,6 +49,7 @@ const liveServers: Server[] = []
 async function startStub(initial: Handler): Promise<Stub> {
   const requests: StubRequest[] = []
   let handler: Handler = initial
+  let closeCb: (() => void) | null = null
   const server = createServer((req, res) => {
     const chunks: Buffer[] = []
     req.on('data', (c: Buffer) => chunks.push(c))
@@ -69,7 +72,9 @@ async function startStub(initial: Handler): Promise<Stub> {
       )
     })
   })
-  liveServers.push(server)
+  server.on('connection', (socket) => {
+    socket.on('close', () => closeCb?.())
+  })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const addr = server.address()
   if (addr === null || typeof addr === 'string') {
@@ -81,6 +86,9 @@ async function startStub(initial: Handler): Promise<Stub> {
     requests,
     reset: () => {
       requests.length = 0
+    },
+    onSocketClose: (cb) => {
+      closeCb = cb
     },
     setHandler: (h) => {
       handler = h
@@ -244,6 +252,22 @@ describe('RemoteEmbedder', () => {
     await e.initialize()
     expect(e.tokenLimit).toBeNull()
     await expect(e.embed('hello')).resolves.toEqual([0.1, 0.2])
+  })
+
+  it('closes the server-side connection after each response (no pooled residue)', async () => {
+    const stub = await startStub(okDim2)
+    const e = new RemoteEmbedder({ serverUrl: stub.url, batchSize: 2, timeoutMs: 1_000 })
+    await e.initialize()
+    let closed = 0
+    stub.onSocketClose(() => {
+      closed++
+    })
+    await e.embed('hello')
+    await e.embed('world')
+    // initialize probes (2) + embeds (2); closed counts only sockets closed
+    // after the hook was installed — the two embed sockets, one each.
+    expect(stub.requests.length).toBe(4)
+    expect(closed).toBe(2)
   })
 
   it('countTokens returns conservative estimates without server round trips', async () => {
