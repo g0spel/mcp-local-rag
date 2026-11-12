@@ -328,6 +328,9 @@ describe('RemoteEmbedder', () => {
     // Immediately retrying must NOT hit the server (breaker open).
     await expect(e.embed('y')).rejects.toThrow(/circuit|cool/i)
     expect(attempts).toBe(5) // no new server hits
+    // Known gap: the half-open recovery path (cooldown expiry → probe
+    // success → breaker reset) is not asserted here — the 60s cooldown is
+    // hardcoded and not worth parameterizing for the test.
   }, 60_000)
 
   it('countTokens returns conservative estimates without server round trips', async () => {
