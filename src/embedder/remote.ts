@@ -232,11 +232,40 @@ export class RemoteEmbedder {
   private serverModelId: string | null = null
   private serverModelSha: string | null = null
   private initialized: boolean = false
+  private breakerFailures: number = 0
+  private breakerOpenUntil: number = 0
 
   constructor(config: RemoteEmbedderConfig) {
     this.config = config
   }
 
+  /**
+   * Circuit breaker (2026-11-12 wedge lesson): during an outage, retry and
+   * auto-sync loops keep opening fresh connections that re-wedge a freshly
+   * recovered tunnel. After one exhausted retry chain (5 consecutive failed
+   * attempts), stop issuing requests for a cool-down; the first call after
+   * the cool-down acts as the half-open probe.
+   */
+  private breakerGuard(): void {
+    if (this.breakerOpenUntil > 0 && Date.now() < this.breakerOpenUntil) {
+      const waitS = Math.ceil((this.breakerOpenUntil - Date.now()) / 1000)
+      throw new RemoteEmbeddingError(
+        `embedding circuit open, cooling down ${waitS}s (upstream unhealthy): ${this.config.serverUrl}`
+      )
+    }
+  }
+
+  private breakerRecord(failed: boolean): void {
+    if (!failed) {
+      this.breakerFailures = 0
+      this.breakerOpenUntil = 0
+      return
+    }
+    this.breakerFailures += 1
+    if (this.breakerFailures >= 5) {
+      this.breakerOpenUntil = Date.now() + 60_000
+    }
+  }
   /**
    * Probe the server and record the embedding dimension so later responses
    * can be validated (a dimension change means the server swapped models —
@@ -393,6 +422,18 @@ export class RemoteEmbedder {
   }
 
   private async postEmbed(inputs: string[]): Promise<number[][]> {
+    this.breakerGuard()
+    try {
+      const out = await this.postEmbedAttempt(inputs)
+      this.breakerRecord(false)
+      return out
+    } catch (e) {
+      this.breakerRecord(true)
+      throw e
+    }
+  }
+
+  private async postEmbedAttempt(inputs: string[]): Promise<number[][]> {
     return withTimeout(async (signal) => {
       const res = await rawRequest(new URL(`${this.config.serverUrl}/embed`), {
         method: 'POST',

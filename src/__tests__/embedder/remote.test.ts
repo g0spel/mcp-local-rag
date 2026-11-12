@@ -270,6 +270,66 @@ describe('RemoteEmbedder', () => {
     expect(closed).toBe(2)
   })
 
+  it('leaves zero open sockets after timeout-aborted requests against a black-hole server', async () => {
+    // Regression for the chronic leak observed in production (22 idle
+    // ESTABLISHED sockets accumulated over 11 days on 0.19.2's dedicated
+    // transport, wedging the ssh tunnel's channel handling): a request that
+    // hangs must not leave its socket open after the abort teardown.
+    const sockets = new Set<import('node:net').Socket>()
+    const hole = createServer((_req, res) => {
+      // black hole: accept and read the request, never respond
+      if (res.socket) {
+        sockets.add(res.socket)
+      }
+    })
+    hole.on('connection', (s) => sockets.add(s))
+    liveServers.push(hole)
+    await new Promise<void>((resolve) => hole.listen(0, '127.0.0.1', resolve))
+    const addr = hole.address()
+    if (addr === null || typeof addr === 'string') {
+      throw new Error('hole server did not report a port')
+    }
+    const e = new RemoteEmbedder({
+      serverUrl: `http://127.0.0.1:${addr.port}`,
+      batchSize: 2,
+      timeoutMs: 700, // fast abort for the test
+    })
+    // One embed → 5 attempts (1 + 4 retries), each hangs and aborts.
+    await expect(e.embed('hang')).rejects.toThrow()
+    // Give teardown a moment, then require every socket the server saw to be
+    // closed from the client side (FIN received → destroyed or ended).
+    await new Promise((r) => setTimeout(r, 400))
+    const stillOpen = [...sockets].filter((s) => !s.destroyed && s.readyState !== 'closed')
+    expect(stillOpen.length).toBe(0)
+  }, 45_000)
+
+  it('opens a circuit breaker during failure storms instead of hammering the server', async () => {
+    // Wedge root cause (2026-11-12): during an outage, retry+auto-sync loops
+    // kept creating hanging connections that re-wedged the freshly restarted
+    // tunnel. The embedder must trip a breaker after consecutive failures and
+    // stop issuing requests during the cool-down.
+    let attempts = 0
+    let isOutage: () => boolean = () => false
+    const stub = await startStub((_req, respond) => {
+      attempts++
+      if (isOutage()) {
+        respond(500, 'boom')
+        return
+      }
+      respond(200, DIM_2)
+    })
+    const e = new RemoteEmbedder({ serverUrl: stub.url, batchSize: 2, timeoutMs: 1_000 })
+    await e.initialize() // healthy probe first
+    stub.reset()
+    isOutage = () => true
+    attempts = 0
+    await expect(e.embed('x')).rejects.toThrow() // full retry chain fails
+    expect(attempts).toBe(5) // 1 + 4 retries → breaker trips
+    // Immediately retrying must NOT hit the server (breaker open).
+    await expect(e.embed('y')).rejects.toThrow(/circuit|cool/i)
+    expect(attempts).toBe(5) // no new server hits
+  }, 60_000)
+
   it('countTokens returns conservative estimates without server round trips', async () => {
     const { e, stub } = await makeInitializedEmbedder()
     const [cjk, ascii] = await e.countTokens(['一二三四五', 'abcde'])
