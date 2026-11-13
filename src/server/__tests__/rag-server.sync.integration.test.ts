@@ -399,6 +399,39 @@ describe('MCP sync tools', () => {
     }
   }, 45000)
 
+  it('schedules exactly one auto-retry after a failed sync, and a successful run restores the allowance', async () => {
+    const fixture = await makeFixture('failed-sync-retry')
+    const server = await makeServer(fixture)
+    const priv = privateMembers<{
+      failedSyncRetryTimer: ReturnType<typeof setTimeout> | null
+      failedSyncRetryUsed: boolean
+      scheduleFailedSyncRetry: () => void
+    }>(server)
+    const badPath = join(fixture.roots[0] ?? '', 'bad.md')
+    await writeFixtureFile(badPath, `broken doc ${FAIL_MARKER} ${'x'.repeat(200)}`)
+    try {
+      const jobId = await syncStart(server)
+      const snapshots = await pollUntilTerminal(server, jobId)
+      expect(lastSnapshot(snapshots).state).toBe('failed')
+      // A retry is scheduled exactly once for this failure sequence.
+      expect(priv.failedSyncRetryTimer).not.toBeNull()
+      priv.scheduleFailedSyncRetry() // idempotence: no second timer
+      // Simulate the retry firing: the callback consumes the allowance.
+      priv.failedSyncRetryUsed = true
+      priv.failedSyncRetryTimer = null
+      priv.scheduleFailedSyncRetry() // allowance consumed → no new timer
+      expect(priv.failedSyncRetryTimer).toBeNull()
+      // A later successful run restores the allowance.
+      await writeFixtureFile(badPath, `fixed doc ${'y'.repeat(200)}`)
+      const jobId2 = await syncStart(server)
+      const snapshots2 = await pollUntilTerminal(server, jobId2)
+      expect(lastSnapshot(snapshots2).state).toBe('succeeded')
+      expect(priv.failedSyncRetryUsed).toBe(false)
+    } finally {
+      await server.close()
+    }
+  }, 45000)
+
   // --------------------------------------------
   // Start before work (SYNC-006)
   // --------------------------------------------

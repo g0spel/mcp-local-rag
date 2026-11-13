@@ -10,7 +10,7 @@
 // budget.
 
 import { createServer, type Server } from 'node:http'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { privateMembers } from '../../__tests__/test-doubles.js'
 import { createEmbedder } from '../../cli/common.js'
 import {
   estimateTokens,
@@ -303,6 +303,35 @@ describe('RemoteEmbedder', () => {
     expect(stillOpen.length).toBe(0)
   }, 45_000)
 
+  it('caps every attempt at 8s even when timeoutMs is configured larger', async () => {
+    // Wedge #4: requests hung 5-8s but eventually 200'd, so no failure tripped
+    // anything. The 8s hard ceiling aborts those attempts (retryable), and the
+    // abort's RST frees the request's slot in the tunnel queue.
+    const hole = createServer((_req, res) => {
+      // black hole: read the request, never respond
+      res.socket?.setKeepAlive?.(true)
+    })
+    liveServers.push(hole)
+    await new Promise<void>((resolve) => hole.listen(0, '127.0.0.1', resolve))
+    const addr = hole.address()
+    if (addr === null || typeof addr === 'string') {
+      throw new Error('hole server did not report a port')
+    }
+    const e = new RemoteEmbedder({
+      serverUrl: `http://127.0.0.1:${addr.port}`,
+      batchSize: 2,
+      timeoutMs: 25_000, // far above the cap — the cap must win
+    })
+    const attempt = privateMembers<{
+      postEmbedAttempt: (inputs: string[]) => Promise<number[][]>
+    }>(e).postEmbedAttempt.bind(e)
+    const t0 = Date.now()
+    await expect(attempt(['x'])).rejects.toThrow()
+    const elapsed = Date.now() - t0
+    expect(elapsed).toBeGreaterThanOrEqual(7_000)
+    expect(elapsed).toBeLessThan(11_000)
+  }, 20_000)
+
   it('opens a circuit breaker during failure storms instead of hammering the server', async () => {
     // Wedge root cause (2026-11-12): during an outage, retry+auto-sync loops
     // kept creating hanging connections that re-wedged the freshly restarted
@@ -332,6 +361,38 @@ describe('RemoteEmbedder', () => {
     // success → breaker reset) is not asserted here — the 60s cooldown is
     // hardcoded and not worth parameterizing for the test.
   }, 60_000)
+
+  it('caps concurrent upstream requests at 4 (and at 1 once degraded)', async () => {
+    // Wedge #4: 16 concurrent MCP callers stacked onto the tunnel. The gate is
+    // the single chokepoint, so every caller's own await provides backpressure.
+    let concurrent = 0
+    let maxConcurrent = 0
+    let holdMs = 120
+    const stub = await startStub((_req, respond) => {
+      concurrent++
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      setTimeout(() => {
+        concurrent--
+        respond(200, JSON.stringify([[0.1, 0.2]]))
+      }, holdMs)
+    })
+    const e = new RemoteEmbedder({ serverUrl: stub.url, batchSize: 1, timeoutMs: 8_000 })
+    await e.initialize()
+    maxConcurrent = 0
+    // Normal state: 8 concurrent embeds, never more than 4 upstream at once.
+    await Promise.all(Array.from({ length: 8 }, (_, i) => e.embed(`a${i}`)))
+    expect(maxConcurrent).toBeLessThanOrEqual(4)
+    // Degraded state: the window averages the last 8 attempts, so saturate it
+    // with slow samples (8 × ~2.8s) before asserting the cap collapsed to 1.
+    holdMs = 2_800
+    for (let i = 0; i < 8; i++) {
+      await e.embed(`slow-${i}`)
+    }
+    maxConcurrent = 0
+    stub.reset()
+    await Promise.all([e.embed('d1'), e.embed('d2'), e.embed('d3')])
+    expect(maxConcurrent).toBe(1)
+  }, 120_000)
 
   it('countTokens returns conservative estimates without server round trips', async () => {
     const { e, stub } = await makeInitializedEmbedder()

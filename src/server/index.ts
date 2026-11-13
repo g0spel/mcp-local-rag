@@ -137,6 +137,8 @@ const TOOL_ERROR_CONTEXT: Record<string, ToMcpErrorContext> = {
   status: {},
   sync_status: {},
 }
+/** Single retry delay for a failed auto-sync run (see scheduleFailedSyncRetry). */
+const FAILED_SYNC_RETRY_MS = 5 * 60_000
 
 const ATTACHMENT_WARNING_ANNOTATIONS = {
   audience: ['user', 'assistant'],
@@ -1204,6 +1206,8 @@ export class RAGServer {
   // ============================================
   private lastAutoSyncFingerprint: string | null = null
   private autoSyncQueued: boolean = false
+  private failedSyncRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private failedSyncRetryUsed: boolean = false
   private lastAutoSyncAttempt = 0
   /** Started by initialize(), stopped by close() — leaked watchers keep
    * receiving events (and Linux recursive-watch scans can then hit torn-down
@@ -1484,6 +1488,37 @@ export class RAGServer {
       // shared state file to the holder's run.
       { persist: result.error?.lockHeld !== true }
     )
+
+    if (result.error !== null && result.error.lockHeld !== true) {
+      this.scheduleFailedSyncRetry()
+    } else if (result.error === null) {
+      this.failedSyncRetryUsed = false // success restores the retry allowance
+    }
+  }
+
+  /**
+   * A failed sync rolls back atomically (nothing commits), and nothing else
+   * re-triggers it: the watcher only fires on new file events, so a run killed
+   * by a tunnel restart leaves the documents silently stale (verified
+   * 2026-11-13: failed 359/365 sat unchanged for 30+ minutes). Schedule ONE
+   * retry after 5 minutes; if that also fails, wait for a human or a file
+   * event — no retry loops.
+   */
+  private scheduleFailedSyncRetry(): void {
+    if (this.failedSyncRetryTimer !== null || this.failedSyncRetryUsed) {
+      return
+    }
+    this.failedSyncRetryTimer = setTimeout(() => {
+      this.failedSyncRetryTimer = null
+      this.failedSyncRetryUsed = true // one retry per failure sequence
+      console.error('Auto-sync: retrying after a failed run')
+      this.handleSyncStart({}).catch((retryError: unknown) => {
+        console.error(
+          'Auto-sync retry failed:',
+          retryError instanceof Error ? retryError.message : retryError
+        )
+      })
+    }, FAILED_SYNC_RETRY_MS)
   }
 
   /**
@@ -1544,6 +1579,10 @@ export class RAGServer {
    * Stop the server and release resources
    */
   async close(): Promise<void> {
+    if (this.failedSyncRetryTimer !== null) {
+      clearTimeout(this.failedSyncRetryTimer)
+      this.failedSyncRetryTimer = null
+    }
     for (const watcher of this.autoSyncWatchers) {
       try {
         watcher.close()

@@ -234,6 +234,13 @@ export class RemoteEmbedder {
   private initialized: boolean = false
   private breakerFailures: number = 0
   private breakerOpenUntil: number = 0
+  /** Recent attempt latencies (ms), newest last — drives the degraded state. */
+  private recentLatencies: number[] = []
+  private degraded: boolean = false
+  private degradedStreak: number = 0
+  /** In-flight attempt count and the waiters queued for a slot. */
+  private inFlight: number = 0
+  private readonly slotWaiters: Array<() => void> = []
 
   constructor(config: RemoteEmbedderConfig) {
     this.config = config
@@ -394,6 +401,12 @@ export class RemoteEmbedder {
     const vectors: number[][] = []
     for (let i = 0; i < texts.length; i += this.config.batchSize) {
       const batch = texts.slice(i, i + this.config.batchSize)
+      // Degraded window: space batches out (1s doubling to a 5s ceiling) so a
+      // bulk run yields the tunnel to interactive work instead of queueing
+      // behind it (wedge #4).
+      if (this.degraded && i > 0) {
+        await sleep(this.degradedBackoffMs())
+      }
       const out = await withRetry(() => this.postEmbed(batch), `embedBatch(${batch.length} texts)`)
       this.validate(out, batch.length)
       vectors.push(...out)
@@ -423,6 +436,8 @@ export class RemoteEmbedder {
 
   private async postEmbed(inputs: string[]): Promise<number[][]> {
     this.breakerGuard()
+    await this.acquireSlot()
+    const startedAt = Date.now()
     try {
       const out = await this.postEmbedAttempt(inputs)
       this.breakerRecord(false)
@@ -430,10 +445,81 @@ export class RemoteEmbedder {
     } catch (e) {
       this.breakerRecord(true)
       throw e
+    } finally {
+      this.recordLatency(Date.now() - startedAt)
+      this.releaseSlot()
     }
   }
 
+  /**
+   * Concurrency gate (2026-11-13 wedge #4): the 16-in-flight pile-up came from
+   * concurrent MCP callers (queries + ingest), not from sync (strictly serial).
+   * This is the single chokepoint every caller goes through, so the caller's
+   * own await backpressure applies without touching each call site. Normal cap
+   * 4 keeps parallel queries snappy; the degraded cap 1 makes a slow patient
+   * trickle instead of a deep queue.
+   */
+  private concurrencyLimit(): 1 | 4 {
+    return this.degraded ? 1 : 4
+  }
+
+  private async acquireSlot(): Promise<void> {
+    if (this.inFlight < this.concurrencyLimit()) {
+      this.inFlight++
+      return
+    }
+    await new Promise<void>((resolve) => {
+      this.slotWaiters.push(resolve)
+    })
+  }
+
+  private releaseSlot(): void {
+    const next = this.slotWaiters.shift()
+    if (next !== undefined) {
+      next() // hand the slot over; inFlight stays the same
+      return
+    }
+    this.inFlight--
+  }
+
+  /**
+   * Degradation state (wedge #4 second lesson): the breaker only sees failures,
+   * but wedge #4 was all-200-slow, so nothing tripped and the queue kept
+   * deepening. A latency window flips this state instead: 3+ samples averaging
+   * >2.5s enters degraded (cap 1 + inter-batch backoff), <1s leaves it.
+   */
+  private recordLatency(ms: number): void {
+    this.recentLatencies.push(ms)
+    if (this.recentLatencies.length > 8) {
+      this.recentLatencies.shift()
+    }
+    if (this.recentLatencies.length < 3) {
+      return
+    }
+    const avg =
+      this.recentLatencies.reduce((sum, value) => sum + value, 0) / this.recentLatencies.length
+    if (avg > 2_500) {
+      this.degraded = true
+    } else if (avg < 1_000) {
+      this.degraded = false
+      this.degradedStreak = 0
+    }
+  }
+
+  /** 1s doubling to a 5s ceiling while degraded; resets when latency recovers. */
+  private degradedBackoffMs(): number {
+    const delay = Math.min(1_000 * 2 ** this.degradedStreak, 5_000)
+    this.degradedStreak++
+    return delay
+  }
+
   private async postEmbedAttempt(inputs: string[]): Promise<number[][]> {
+    // Hard ceiling (2026-11-13 wedge #4 lesson): during queue self-sustaining
+    // degradation, requests sat 5-8s each while still eventually returning
+    // 200. Capping every attempt at 8s turns those into aborts whose RST also
+    // drops the request's slot from the tunnel queue, so retries land on a
+    // draining queue instead of deepening it. Aborts are retryable (withRetry).
+    const attemptTimeoutMs = Math.min(this.config.timeoutMs ?? 30_000, 8_000)
     return withTimeout(async (signal) => {
       const res = await rawRequest(new URL(`${this.config.serverUrl}/embed`), {
         method: 'POST',
@@ -449,6 +535,6 @@ export class RemoteEmbedder {
         )
       }
       return JSON.parse(res.text)
-    }, this.config.timeoutMs ?? 30_000)
+    }, attemptTimeoutMs)
   }
 }
