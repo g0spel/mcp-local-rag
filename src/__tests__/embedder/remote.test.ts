@@ -394,6 +394,41 @@ describe('RemoteEmbedder', () => {
     expect(maxConcurrent).toBe(1)
   }, 120_000)
 
+  it('drains excess concurrency when the limit shrinks to 1 (degraded)', async () => {
+    // The naive handover kept inFlight pinned at 4 after a 4→1 shrink, which
+    // would have made the degraded cap a no-op (2026-11-13 review).
+    let concurrent = 0
+    let maxAfterFlip = 0
+    // 1.2s keeps the latency window in the "hold" band (1-2.5s): fast samples
+    // would flip degraded back off mid-test and re-admit the queue.
+    const stub = await startStub((_req, respond) => {
+      concurrent++
+      setTimeout(() => {
+        concurrent--
+        respond(200, JSON.stringify([[0.1, 0.2]]))
+      }, 1_200)
+    })
+    const e = new RemoteEmbedder({ serverUrl: stub.url, batchSize: 1, timeoutMs: 8_000 })
+    await e.initialize()
+    const priv = privateMembers<{ degraded: boolean; inFlight: number }>(e)
+    // Fill the normal 4-slot gate, then shrink the limit mid-flight.
+    const firstWave = Array.from({ length: 4 }, (_, i) => e.embed(`w${i}`))
+    await new Promise((r) => setTimeout(r, 50))
+    priv.degraded = true
+    const secondWave = Array.from({ length: 3 }, (_, i) => e.embed(`s${i}`))
+    // The already-running wave is not evicted; only AFTER it drains must new
+    // admissions respect the shrunk limit of 1.
+    await Promise.all(firstWave)
+    maxAfterFlip = 0
+    const watcher = setInterval(() => {
+      maxAfterFlip = Math.max(maxAfterFlip, concurrent)
+    }, 20)
+    await Promise.all(secondWave)
+    clearInterval(watcher)
+    expect(maxAfterFlip).toBeLessThanOrEqual(1)
+    expect(priv.inFlight).toBe(0)
+  }, 60_000)
+
   it('countTokens returns conservative estimates without server round trips', async () => {
     const { e, stub } = await makeInitializedEmbedder()
     const [cjk, ascii] = await e.countTokens(['一二三四五', 'abcde'])

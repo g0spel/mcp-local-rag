@@ -474,12 +474,24 @@ export class RemoteEmbedder {
   }
 
   private releaseSlot(): void {
-    const next = this.slotWaiters.shift()
-    if (next !== undefined) {
-      next() // hand the slot over; inFlight stays the same
-      return
-    }
+    // Decrement FIRST, then hand slots out: a blind handover kept inFlight at
+    // its old value forever, so when the limit shrank 4→1 (degraded) the gate
+    // kept admitting 4 (2026-11-13 review). With the pump bounded by the
+    // CURRENT limit, a shrink drains the excess and only then re-admits.
     this.inFlight--
+    this.pumpWaiters()
+  }
+
+  private pumpWaiters(): void {
+    const limit = this.concurrencyLimit()
+    while (this.inFlight < limit) {
+      const next = this.slotWaiters.shift()
+      if (next === undefined) {
+        return
+      }
+      this.inFlight++
+      next()
+    }
   }
 
   /**
