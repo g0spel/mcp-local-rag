@@ -68,6 +68,15 @@ const WINDOW_SIZE = 5
 const MAX_SENTENCES = 15
 
 /**
+ * Sentences embedded per call while grouping. Grouping only ever reads the
+ * current group (≤ MAX_SENTENCES), so batching is output-identical; it bounds
+ * the live sentence-vector set to one batch instead of the whole document.
+ * A 1.1 MB ledger is ~14k sentences = ~117 MB of vectors held at once before
+ * batching (2026-11-16 OOM post-mortem).
+ */
+const SENTENCE_EMBED_BATCH = 256
+
+/**
  * Garbage chunks, language-agnostically: empty after trimming, only decoration
  * characters (`----`, `====`), or one character repeated over 80% of the text.
  * Anything alphanumeric is kept. Applied after the minChunkLength filter.
@@ -285,11 +294,9 @@ export class SemanticChunker {
     const budget = await resolveContainmentBudget(embedder, textPrefix)
     const units = budget ? await containUnits(sentenceUnits, budget) : sentenceUnits
 
-    // Generate embeddings for all sentences
-    const embeddings = await embedder.embedBatch(units.map((unit) => unit.text))
-
-    // Apply Max-Min algorithm to group sentences into chunks
-    const sentenceGroups = this.groupSentences(units, embeddings)
+    // Group sentences into chunks while embedding one bounded batch at a time:
+    // the full document's vectors never coexist in memory.
+    const sentenceGroups = await this.groupSentencesInBatches(units, embedder)
 
     const admitted = sentenceGroups.filter((group) => this.admitsGroup(group))
     const pieces = budget ? await containGroups(admitted, budget) : admitted
@@ -337,44 +344,50 @@ export class SemanticChunker {
     return this.shouldAddToChunk(embedding, groupEmbeddings)
   }
 
-  private groupSentences(sentences: SentenceUnit[], embeddings: number[][]): SentenceUnit[][] {
-    if (sentences.length === 0) {
-      return []
-    }
-    if (sentences.length === 1) {
-      const sentence = sentences[0]
-      return sentence ? [[sentence]] : []
-    }
-
+  /**
+   * Group sentences into chunks using the Max–Min algorithm while embedding
+   * `SENTENCE_EMBED_BATCH` sentences at a time. Identical output to embedding
+   * everything up front: a decision only reads the current group, and a batch
+   * boundary never ends a group on its own.
+   */
+  private async groupSentencesInBatches(
+    units: SentenceUnit[],
+    embedder: EmbedderInterface
+  ): Promise<SentenceUnit[][]> {
     const groups: SentenceUnit[][] = []
     let currentGroup: SentenceUnit[] = []
     let currentGroupEmbeddings: number[][] = []
 
-    for (let i = 0; i < sentences.length; i++) {
-      const sentence = sentences[i]
-      const embedding = embeddings[i]
+    for (let start = 0; start < units.length; start += SENTENCE_EMBED_BATCH) {
+      const batch = units.slice(start, start + SENTENCE_EMBED_BATCH)
+      const embeddings = await embedder.embedBatch(batch.map((unit) => unit.text))
 
-      if (!sentence || !embedding) {
-        continue
+      for (let i = 0; i < batch.length; i++) {
+        const sentence = batch[i]
+        const embedding = embeddings[i]
+
+        if (!sentence || !embedding) {
+          continue
+        }
+
+        if (currentGroup.length === 0) {
+          // Start new group with first sentence
+          currentGroup.push(sentence)
+          currentGroupEmbeddings.push(embedding)
+          continue
+        }
+
+        if (this.continuesGroup(embedding, currentGroupEmbeddings)) {
+          currentGroup.push(sentence)
+          currentGroupEmbeddings.push(embedding)
+          continue
+        }
+
+        // Start new group
+        groups.push([...currentGroup])
+        currentGroup = [sentence]
+        currentGroupEmbeddings = [embedding]
       }
-
-      if (currentGroup.length === 0) {
-        // Start new group with first sentence
-        currentGroup.push(sentence)
-        currentGroupEmbeddings.push(embedding)
-        continue
-      }
-
-      if (this.continuesGroup(embedding, currentGroupEmbeddings)) {
-        currentGroup.push(sentence)
-        currentGroupEmbeddings.push(embedding)
-        continue
-      }
-
-      // Start new group
-      groups.push([...currentGroup])
-      currentGroup = [sentence]
-      currentGroupEmbeddings = [embedding]
     }
 
     // Don't forget the last group

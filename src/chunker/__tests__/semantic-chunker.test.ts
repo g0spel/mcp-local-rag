@@ -701,3 +701,29 @@ describe('Boundary preservation against main', () => {
     }
   )
 })
+
+describe('Sentence embedding batching', () => {
+  it('bounds each embedBatch and never breaks a group at a batch boundary', async () => {
+    // 300 identical-vector sentences: MAX_SENTENCES (15) forces 20 groups.
+    // The 256/44 batch split lands inside the 18th group, so a boundary bug
+    // that ends groups at batch edges would produce 21.
+    const sentences = Array.from({ length: 300 }, (_, i) => `Sentence number ${i} is here.`)
+    const sizes: number[] = []
+    const embedder = {
+      embedBatch: async (texts: string[]): Promise<number[][]> => {
+        sizes.push(texts.length)
+        return texts.map(() => [1, 0, 0, 0])
+      },
+    }
+
+    const chunks = await new SemanticChunker({
+      hardThreshold: 0.6,
+      initConst: 1.5,
+      c: 0.9,
+      minChunkLength: DEFAULT_MIN_CHUNK_LENGTH,
+    }).chunkText(sentences.join(' '), embedder)
+
+    expect(sizes).toEqual([256, 44])
+    expect(chunks).toHaveLength(20)
+  })
+})
