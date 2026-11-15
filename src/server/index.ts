@@ -484,9 +484,12 @@ export class RAGServer {
               const started = await this.handleSyncStart(
                 parseSyncStartInput(request.params.arguments)
               )
-              // Reached only once a job is registered and scheduled; a throw
-              // above leaves the flag set so the `finally` frees the guard.
-              releaseWhenRequestEnds = false
+              // Hand the guard to the job only when one was actually
+              // registered. A refusal (this process already syncing, or a live
+              // cross-process holder) leaves no owner, so the `finally` below
+              // must release it — otherwise the guard leaks and every later
+              // mutation is rejected forever (2026-11-16 OOM post-mortem).
+              releaseWhenRequestEnds = started.isError === true
               return started
             }
             case 'sync_status':
@@ -1262,7 +1265,7 @@ export class RAGServer {
           return
         }
         console.error('Auto-sync: document changes detected, running background sync')
-        await this.handleSyncStart({})
+        await this.startGuardedSync()
       } catch (error: unknown) {
         console.error('Auto-sync scan failed:', error instanceof Error ? error.message : error)
       } finally {
@@ -1272,11 +1275,56 @@ export class RAGServer {
     scan().catch(() => {})
   }
 
+  /**
+   * Start one background sync under the same mutation guard a tool call takes
+   * (2026-11-16 OOM post-mortem). The auto path used to call the handler
+   * directly: it bypassed the guard, and `runSyncJob`'s finally then released a
+   * guard it never acquired, freeing a tool-triggered sync's guard mid-run and
+   * admitting a third overlapping run. Returns false when the guard is already
+   * held or no job started.
+   */
+  private async startGuardedSync(): Promise<boolean> {
+    if (this.acquireMutation() !== null) {
+      return false
+    }
+    try {
+      const started = await this.handleSyncStart({})
+      // A started job owns the guard until its terminal transition; an error
+      // reply means nothing took ownership, so the guard is ours to drop.
+      if (started.isError !== true) {
+        return true
+      }
+      this.releaseMutation()
+      return false
+    } catch (error) {
+      this.releaseMutation()
+      throw error
+    }
+  }
+
   async handleSyncStart(
     input: SyncStartInput
   ): Promise<{ content: RagTextContentBlock[]; isError?: true }> {
     // Root-dependent tool: fail fast on configError before registering a job.
     this.assertConfigOk()
+
+    // In-process single flight (2026-11-16 OOM post-mortem): `maybeAutoSync`
+    // calls this handler directly, so the dispatch-level mutation guard cannot
+    // serialize it against a tool-triggered sync, and the cross-process lock
+    // treats our own PID as free. Two overlapping full runs each hold a whole
+    // document's sentence vectors plus per-file copies; that overlap is what
+    // drove the heap past its limit. This check is the in-process authority.
+    if (this.syncJob?.state === 'running') {
+      return {
+        content: this.withWarnings([
+          {
+            type: 'text',
+            text: 'A sync is already running in this process. Poll its sync_status instead of starting a competing run.',
+          },
+        ]),
+        isError: true,
+      }
+    }
 
     // A live cross-process holder owns the lock: reject BEFORE registering a
     // job. The shared sync-state file belongs to the holder's run — a loser

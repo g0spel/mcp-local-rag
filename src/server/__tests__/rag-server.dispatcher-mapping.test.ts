@@ -453,6 +453,27 @@ describe('External mutation guard at the dispatch boundary (SYNC-007)', () => {
     }
   })
 
+  it('releases the guard when sync_start answers a refusal instead of scheduling a job', async () => {
+    stubEmbedder()
+    // A live foreign holder (PID 1: always alive, never us) makes the handler
+    // ANSWER `isError` rather than throw. The dispatcher used to hand the guard
+    // to a job that never existed, soft-locking every mutation for the process
+    // lifetime (2026-11-16 OOM post-mortem).
+    const lockFile = resolve('./tmp/sync.lock')
+    writeFileSync(lockFile, `1 ${new Date().toISOString()}\n`)
+    try {
+      const refused = await dispatch(server, 'sync_start', {})
+      expect(refused.isError).toBe(true)
+    } finally {
+      rmSync(lockFile, { force: true })
+    }
+
+    const testFile = resolve(testDataDir, 'guard-after-refused-start.txt')
+    writeFileSync(testFile, 'Content after a refused sync_start. '.repeat(40))
+    const result = await dispatch(server, 'ingest_file', { filePath: testFile })
+    expect(result.isError).toBeUndefined()
+  }, 60000)
+
   it('releases the guard when sync_start is rejected before a job is scheduled', async () => {
     stubEmbedder()
     await expect(dispatch(server, 'sync_start', { path: '   ' })).rejects.toMatchObject({
