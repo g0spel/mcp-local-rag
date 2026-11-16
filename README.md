@@ -329,9 +329,38 @@ reranking is MCP-only.
 | `RAG_MAX_DISTANCE` | (not set) | Filter out low-relevance results (e.g., `0.5`). |
 | `RAG_MAX_FILES` | (not set) | Limit results to top N files (e.g., `1` for single best file). |
 | `RAG_RERANK_CMD` | (not set) | MCP only: external command; `{query}` passes the query and `{top}` the requested result count. |
+| `RAG_RERANK_URL` | (not set) | MCP only: TEI-compatible `/rerank` endpoint (e.g. `http://127.0.0.1:18082`). **Takes precedence over `RAG_RERANK_CMD`**; the query travels in the request body, so it cannot be dropped by a missing argument template. |
 | `RAG_RERANK_TIMEOUT_MS` | `10000` | Time budget per rerank call in milliseconds (100–600000). |
 
-### External Reranking (`RAG_RERANK_CMD`)
+### External Reranking (`RAG_RERANK_URL` / `RAG_RERANK_CMD`)
+
+Two transports, one behaviour: whichever is configured receives the search
+candidates and returns them reordered. The endpoint is preferred when both are
+set.
+
+**Endpoint (`RAG_RERANK_URL`)** posts `{ "query", "texts", "raw_scores": true }`
+to `{url}/rerank` and expects `[{ "index", "score" }]` back, where each `index`
+names a candidate that was sent, exactly once. Candidates are re-ordered by
+score (highest first) and trimmed to the requested count. The query is a
+request-body field, so it cannot be lost to a missing argument template.
+
+```json
+{
+  "env": {
+    "RAG_RERANK_URL": "http://127.0.0.1:18082",
+    "RAG_RERANK_TIMEOUT_MS": "8000"
+  }
+}
+```
+
+Network errors, `429`/`5xx` and timeouts are retried (3 attempts, exponential
+backoff); other statuses, and any response that is not a valid `{index, score}`
+set, end the call. A process-wide transport is not pooled: each call opens its
+own connection, so a wedged tunnel leaves nothing behind.
+
+**Command (`RAG_RERANK_CMD`)** is the original transport; see below.
+
+### External Reranking by Command (`RAG_RERANK_CMD`)
 
 The command reads search results, including matched text, from stdin. If it calls a remote
 service, that text may leave your machine.

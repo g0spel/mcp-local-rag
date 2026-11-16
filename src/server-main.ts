@@ -62,6 +62,34 @@ export function parseRerankCmd(value: string | undefined): ParseResult<string> {
 }
 
 /**
+ * Parse the rerank endpoint. Unset, or set to whitespace only, leaves the
+ * endpoint transport off; anything that is not an http(s) URL is rejected with
+ * a warning rather than failing every query at request time.
+ */
+export function parseRerankUrl(value: string | undefined): ParseResult<string> {
+  const trimmed = value?.trim() ?? ''
+  if (trimmed.length === 0) {
+    return { value: undefined }
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    return {
+      value: undefined,
+      warning: `Invalid RAG_RERANK_URL value: "${trimmed.slice(0, 100)}". Expected an http(s) URL. Ignoring.`,
+    }
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return {
+      value: undefined,
+      warning: `Invalid RAG_RERANK_URL value: "${trimmed.slice(0, 100)}". Expected an http(s) URL. Ignoring.`,
+    }
+  }
+  return { value: trimmed }
+}
+
+/**
  * Parse the rerank timeout, falling back to the default rather than to "no
  * timeout". `Number` rather than `Number.parseInt`, so a fractional value is
  * rejected instead of silently truncated.
@@ -196,6 +224,7 @@ function applyOptionalSettings(config: ServerConfig, env: NodeJS.ProcessEnv): st
   const titlePrefix = parseBooleanEnv('EMBED_TITLE_PREFIX', env['EMBED_TITLE_PREFIX'])
   const headingPrefix = parseBooleanEnv('EMBED_HEADING_PREFIX', env['EMBED_HEADING_PREFIX'])
   const rerankCommand = parseRerankCmd(env['RAG_RERANK_CMD'])
+  const rerankUrl = parseRerankUrl(env['RAG_RERANK_URL'])
   const rerankTimeoutMs = parseRerankTimeoutMs(env['RAG_RERANK_TIMEOUT_MS'])
 
   if (maxDistance.value !== undefined) {
@@ -216,6 +245,9 @@ function applyOptionalSettings(config: ServerConfig, env: NodeJS.ProcessEnv): st
   if (rerankCommand.value !== undefined) {
     config.rerankCommand = rerankCommand.value
   }
+  if (rerankUrl.value !== undefined) {
+    config.rerankUrl = rerankUrl.value
+  }
   config.storeImages = storeImages.value
   config.titlePrefix = titlePrefix.value
   config.headingPrefix = headingPrefix.value
@@ -231,6 +263,7 @@ function applyOptionalSettings(config: ServerConfig, env: NodeJS.ProcessEnv): st
     titlePrefix,
     headingPrefix,
     rerankCommand,
+    rerankUrl,
     rerankTimeoutMs,
   ]
     .map((parsed) => parsed.warning)

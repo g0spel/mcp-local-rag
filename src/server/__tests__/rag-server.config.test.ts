@@ -17,6 +17,7 @@ import type { DocumentParser } from '../../parser/index.js'
 import {
   parseRerankCmd,
   parseRerankTimeoutMs,
+  parseRerankUrl,
   parseStoreImages,
   resolveServerConfig,
 } from '../../server-main.js'
@@ -188,6 +189,44 @@ describe('RAG_RERANK_CMD configuration', () => {
       cwd
     )
     expect(enabled.rerankCommand).toBe('/usr/local/bin/reranker')
+  })
+})
+
+describe('RAG_RERANK_URL configuration', () => {
+  const cwd = resolve('./tmp/test-lancedb-config-shape')
+
+  it('leaves the endpoint unset when the variable is unset or blank', () => {
+    expect(parseRerankUrl(undefined)).toEqual({ value: undefined })
+    expect(parseRerankUrl('   ')).toEqual({ value: undefined })
+  })
+
+  it('accepts an http(s) endpoint and keeps it verbatim apart from whitespace', () => {
+    expect(parseRerankUrl(' http://127.0.0.1:18082 ')).toEqual({
+      value: 'http://127.0.0.1:18082',
+    })
+    expect(parseRerankUrl('https://rerank.example/v1')).toEqual({
+      value: 'https://rerank.example/v1',
+    })
+  })
+
+  it.each(['not a url', 'ftp://example.com', '127.0.0.1:18082'])(
+    'rejects %s with a warning instead of failing every query later',
+    (raw) => {
+      const parsed = parseRerankUrl(raw)
+      expect(parsed.value).toBeUndefined()
+      expect(parsed.warning).toContain('RAG_RERANK_URL')
+    }
+  )
+
+  it('threads the endpoint through resolveServerConfig', async () => {
+    const disabled = await resolveServerConfig({ BASE_DIR: cwd }, cwd)
+    expect(disabled.rerankUrl).toBeUndefined()
+
+    const enabled = await resolveServerConfig(
+      { BASE_DIR: cwd, RAG_RERANK_URL: 'http://127.0.0.1:18082' },
+      cwd
+    )
+    expect(enabled.rerankUrl).toBe('http://127.0.0.1:18082')
   })
 })
 

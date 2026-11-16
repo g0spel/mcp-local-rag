@@ -48,6 +48,7 @@ import { DocumentParser, ValidationError } from '../parser/index.js'
 import { textSourceMap } from '../parser/text-source-map.js'
 import { extractMarkdownTitle, extractTxtTitle } from '../parser/title-extractor.js'
 import { type RerankResult, rerankCandidates } from '../rerank/index.js'
+import { rerankCandidatesViaUrl } from '../rerank/remote.js'
 import { type BaseDirsConfigError, displayPath } from '../utils/base-dirs.js'
 import { toError } from '../utils/errors.js'
 import {
@@ -283,6 +284,8 @@ export class RAGServer {
   private readonly storeImages: boolean
   /** Configured reranker command. Undefined leaves query_documents unchanged. */
   private readonly rerankCommand: string | undefined
+  /** Configured `/rerank` endpoint; wins over `rerankCommand` when both are set. */
+  private readonly rerankUrl: string | undefined
   private readonly rerankTimeoutMs: number
   /**
    * The one current-or-latest sync job this process retains. A new `sync_start`
@@ -317,6 +320,7 @@ export class RAGServer {
     this.device = config.device
     this.storeImages = config.storeImages ?? false
     this.rerankCommand = config.rerankCommand
+    this.rerankUrl = config.rerankUrl
     this.rerankTimeoutMs = config.rerankTimeoutMs ?? DEFAULT_RERANK_TIMEOUT_MS
     this.scanExclusion = buildScanExclusion({
       dbPath: this.dbPath,
@@ -529,12 +533,29 @@ export class RAGServer {
   /**
    * query_documents tool handler
    */
-  /** Hands the finished results to the configured command and takes its answer. */
+  /** True when either reranker transport is configured. */
+  private hasReranker(): boolean {
+    return this.rerankUrl !== undefined || this.rerankCommand !== undefined
+  }
+
+  /**
+   * Hands the finished results to the configured reranker and takes its answer.
+   * The endpoint wins over the command: it carries the query in the request
+   * body (an argv template can be left out silently) and spawns no process.
+   */
   private async applyReranker(
     results: RerankResult[],
     query: string,
     limit: number
   ): Promise<RerankResult[]> {
+    if (this.rerankUrl !== undefined) {
+      return await rerankCandidatesViaUrl(
+        { baseUrl: this.rerankUrl, timeoutMs: this.rerankTimeoutMs },
+        results,
+        query,
+        limit
+      )
+    }
     if (this.rerankCommand === undefined) {
       return results
     }
@@ -557,10 +578,9 @@ export class RAGServer {
     // candidates than the caller asked for. `search` applies every filter and
     // caps at `limit`, so the expansion has to be requested up front.
     const limit = args.limit ?? 10
-    const candidateLimit =
-      this.rerankCommand === undefined
-        ? limit
-        : Math.min(limit * RERANK_CANDIDATE_MULTIPLIER, MAX_QUERY_LIMIT)
+    const candidateLimit = this.hasReranker()
+      ? Math.min(limit * RERANK_CANDIDATE_MULTIPLIER, MAX_QUERY_LIMIT)
+      : limit
 
     // `args.scope` is parser-validated; array-wrap without re-validating, and
     // omit the key when absent (exactOptionalPropertyTypes) to keep the scope-absent path.
@@ -606,10 +626,9 @@ export class RAGServer {
     })
 
     // `search` already applied the limit, so only the expanded set is trimmed.
-    const results =
-      this.rerankCommand === undefined
-        ? retrieved
-        : (await this.applyReranker(retrieved, args.query, limit)).slice(0, limit)
+    const results = this.hasReranker()
+      ? (await this.applyReranker(retrieved, args.query, limit)).slice(0, limit)
+      : retrieved
 
     const content: QueryContent = [
       {

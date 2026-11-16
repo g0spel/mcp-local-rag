@@ -44,6 +44,12 @@ interface RAGServerConfigBase {
   storeImages?: boolean
   /** External reranker command, as configured. Unset disables reranking. */
   rerankCommand?: string
+  /**
+   * TEI-compatible `/rerank` endpoint (e.g. `http://127.0.0.1:18082`). Takes
+   * precedence over `rerankCommand`: the query travels in the request body
+   * instead of an argv template, so it cannot be silently dropped.
+   */
+  rerankUrl?: string
   /** Per-rerank-call budget in milliseconds (default: 10000). */
   rerankTimeoutMs?: number
   /**

@@ -100,7 +100,9 @@ function searchResult(index: number): SearchResult {
 
 const servers: RAGServer[] = []
 
-function makeServer(rerank: { rerankCommand?: string; rerankTimeoutMs?: number } = {}): RAGServer {
+function makeServer(
+  rerank: { rerankCommand?: string; rerankUrl?: string; rerankTimeoutMs?: number } = {}
+): RAGServer {
   const server = new RAGServer(
     withTestDevice({
       dbPath,
@@ -415,4 +417,89 @@ describe('handleQueryDocuments when the rerank child breaks its contract', () =>
     )
     expect(rerankStderrLines()).toHaveLength(1)
   })
+})
+
+describe('handleQueryDocuments with a rerank endpoint configured', () => {
+  /** Loopback stand-in for TEI's /rerank: records the body, answers a fixed order. */
+  async function startRerankEndpoint(
+    hits: (
+      body: { query: string; texts: string[] },
+      index: number
+    ) => { index: number; score: number }[]
+  ): Promise<{
+    url: string
+    bodies: { query: string; texts: string[]; raw_scores: boolean }[]
+    close: () => void
+  }> {
+    const { createServer } = await import('node:http')
+    const bodies: { query: string; texts: string[]; raw_scores: boolean }[] = []
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = []
+      req.on('data', (chunk: Buffer) => chunks.push(chunk))
+      req.on('end', () => {
+        const body = parseJson<{ query: string; texts: string[]; raw_scores: boolean }>(
+          Buffer.concat(chunks).toString('utf8')
+        )
+        bodies.push(body)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(hits(body, bodies.length)))
+      })
+    })
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done))
+    const address = server.address()
+    const port = typeof address === 'object' && address !== null ? address.port : 0
+    return { url: `http://127.0.0.1:${port}`, bodies, close: () => server.close() }
+  }
+
+  it('carries the query in the request body and returns the endpoint order, trimmed', async () => {
+    const candidates = [0, 1, 2, 3].map(searchResult)
+    const endpoint = await startRerankEndpoint(() => [
+      { index: 3, score: -0.2 },
+      { index: 1, score: -0.9 },
+      { index: 0, score: -4.0 },
+      { index: 2, score: -7.0 },
+    ])
+    const server = makeServer({ rerankUrl: endpoint.url })
+    stubSearch(server, candidates)
+    try {
+      const response = await server.handleQueryDocuments({ query: 'needle phrase', limit: 2 })
+      // The whole point of the endpoint transport: the query is present.
+      expect(endpoint.bodies[0]?.query).toBe('needle phrase')
+      expect(endpoint.bodies[0]?.texts).toEqual(candidates.map((c) => c.text))
+      expect(identities(resultsOf(response.content))).toEqual(
+        identities([expectDefined(candidates[3]), expectDefined(candidates[1])])
+      )
+    } finally {
+      endpoint.close()
+    }
+  })
+
+  it('expands the candidate set for the endpoint exactly as for a command', async () => {
+    const endpoint = await startRerankEndpoint((body) =>
+      body.texts.map((_text, index) => ({ index, score: index }))
+    )
+    const server = makeServer({ rerankUrl: endpoint.url })
+    const searchSpy = stubSearch(
+      server,
+      Array.from({ length: MAX_QUERY_LIMIT }, (_unused, index) => searchResult(index))
+    )
+    try {
+      await server.handleQueryDocuments({ query: 'chunks', limit: 4 })
+      expect(requestedLimit(searchSpy)).toBe(4 * RERANK_CANDIDATE_MULTIPLIER)
+    } finally {
+      endpoint.close()
+    }
+  })
+
+  it('falls back to the pre-rerank ordering when the endpoint is unreachable', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const server = makeServer({ rerankUrl: 'http://127.0.0.1:9', rerankTimeoutMs: 1000 })
+    const candidates = [0, 1].map(searchResult)
+    stubSearch(server, candidates)
+
+    const response = await server.handleQueryDocuments({ query: 'chunks', limit: 2 })
+
+    expect(identities(resultsOf(response.content))).toEqual(identities(candidates))
+    expect(errors).toHaveBeenCalled()
+  }, 30000)
 })

@@ -95,7 +95,7 @@ async function withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
   throw lastError
 }
 
-async function withTimeout<T>(
+export async function withTimeout<T>(
   run: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number
 ): Promise<T> {
@@ -127,7 +127,7 @@ async function withTimeout<T>(
  * with a raw-socket probe — but it only governs the server side; undici still
  * owns and retains the local end in its pool.)
  */
-function rawRequest(
+export function rawRequest(
   url: URL,
   init: { method: 'GET' | 'POST'; body?: string; signal: AbortSignal }
 ): Promise<{ status: number; text: string }> {
