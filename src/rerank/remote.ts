@@ -159,7 +159,14 @@ export async function rerankCandidatesViaUrl(
   return candidates
 }
 
-/** Highest score first; the response's own order is never trusted. */
+/**
+ * Highest score first; the response's own order is never trusted.
+ *
+ * The rewritten `score` is the reranker's raw logit (higher is more relevant),
+ * replacing the vector distance the search produced (lower is nearer). The
+ * command transport replaces it the same way, so a result stream never mixes
+ * both scales — but a consumer reading `score` as a distance would now be wrong.
+ */
 function rankByScore(candidates: RerankResult[], hits: Scored[], top: number): RerankResult[] {
   const ranked: RerankResult[] = []
   for (const hit of [...hits].sort((a, b) => b.score - a.score)) {

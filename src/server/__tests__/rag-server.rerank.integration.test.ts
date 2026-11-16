@@ -452,6 +452,7 @@ describe('handleQueryDocuments with a rerank endpoint configured', () => {
   }
 
   it('carries the query in the request body and returns the endpoint order, trimmed', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     const candidates = [0, 1, 2, 3].map(searchResult)
     const endpoint = await startRerankEndpoint(() => [
       { index: 3, score: -0.2 },
@@ -469,12 +470,15 @@ describe('handleQueryDocuments with a rerank endpoint configured', () => {
       expect(identities(resultsOf(response.content))).toEqual(
         identities([expectDefined(candidates[3]), expectDefined(candidates[1])])
       )
+      // A successful rerank logs nothing: any line here is a silent degradation.
+      expect(errors).not.toHaveBeenCalled()
     } finally {
       endpoint.close()
     }
   })
 
   it('expands the candidate set for the endpoint exactly as for a command', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     const endpoint = await startRerankEndpoint((body) =>
       body.texts.map((_text, index) => ({ index, score: index }))
     )
@@ -486,6 +490,7 @@ describe('handleQueryDocuments with a rerank endpoint configured', () => {
     try {
       await server.handleQueryDocuments({ query: 'chunks', limit: 4 })
       expect(requestedLimit(searchSpy)).toBe(4 * RERANK_CANDIDATE_MULTIPLIER)
+      expect(errors).not.toHaveBeenCalled()
     } finally {
       endpoint.close()
     }
